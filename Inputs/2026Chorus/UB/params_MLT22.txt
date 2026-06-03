@@ -1,0 +1,60 @@
+.............................Initialization of FDC................................
+!!Edited by Alwin Roy, Feb 26, 2026. If you have any question please contact Dedong Wang (dedongpotsdam@gmail.com)
+!!
+!!
+!!
+!!
+!!Please do NOT add or delete any line!!!
+!!
+!!start initialization
+..............................
+!!!!!!!!!Output file name
+AR_UB_MLT22_Sheely01.plt
+
+!!!!!!!!!Planet
+Earth
+
+!!!!!!!!!Magnetic Intensity(nT)
+0
+
+!!!!!!!!!NPA,NE,NL
+89 , 189 , 5
+
+!!!!!!!!!L_min*10,L_max*10
+30, 70
+
+!!!!!!!!!E_min,Emax in unit of keV
+0.001 , 30000
+
+!!!!!!!!!PA_min,PA_max in unit of Degree
+1 , 89
+
+!!!!!!!!!Kp10,MLT
+40,  22.0
+
+!!!!!!!!!NresType,nres_min,nres_max
+Constant , -5 , 5
+
+!!!!!!!!!DenModel,DenValue in unit of cm^-3,DenLatINdex
+Sheely01 , 0.0 , 0.0
+
+!!!!!!!!!Frequency Distribution
+2026UBChorus
+
+!!!!!!!!!FreqUnit,omega_m_per,d_omega_per,o_lc,o_uc
+2026UBChorus, 0.2,  0.15,  0.05,  0.4
+
+!!!!!!!!!nint,nint_X,nint_N
+50, 50, 50
+
+!!!!!!!!!lam_min,lam_max in unit of Degree
+0.0,  10.0
+
+!!!!!!!!!BwType,Bw_Input in unit of pT
+2026UBChorus,  0.0
+
+!!!!!!!!!ThetaType,Theta_Input (center, width, min, max) in unit of Degree
+Constant,  0.0 , 30.0 , 0.0 , 30.0 , 0.0 , 45.0 , 0.0
+
+
+

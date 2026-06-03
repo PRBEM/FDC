@@ -1,0 +1,57 @@
+.............................Initialization of FDC................................
+!!Added by Hui Zhu, March 25 2016. If you have any question please contact Hui Zhu (zhuhui328@gmail.com)
+!!
+!!
+!!
+!!
+!!Please do NOT add or delete any line!!!
+!!
+!!start initialization
+..............................
+!!!!!!!!!Output file name
+DC_Nbb_Lowerband_Chorus_L60.plt
+
+!!!!!!!!!Planet
+Dipole
+
+!!!!!!!!!Magnetic Intensity
+116
+
+!!!!!!!!!NPA,NE,NL
+89 , 211 , 2
+
+!!!!!!!!!L_min,L_max
+5 , 6
+
+!!!!!!!!!E_min,Emax in unit of keV
+0.01 , 100
+
+!!!!!!!!!PA_min,PA_max in unit of Degree
+1 , 89
+
+!!!!!!!!!Kp10,MLT
+0,  2.0
+
+!!!!!!!!!NresType,nres_min,nres_max
+Constant , -5 , 5
+
+!!!!!!!!!DenModel,DenValue in unit of cm^-3,DenLatINdex
+Constant , 16.9 , 0.0
+
+!!!!!!!!!FreqUnit,omega_m_per,d_omega_per,o_lc,o_uc
+NbbLBC, 0.35,  0.15,  0.05,  0.65
+
+!!!!!!!!!nint,nint_X,nint_N
+50, 50, 50
+
+!!!!!!!!!lam_min,lam_max in unit of Degree
+0.0,  15.0 
+
+!!!!!!!!!BwType,Bw_Input in unit of pT
+NbbLBC,  0.0
+
+!!!!!!!!!ThetaType,Theta_Input (center, width, min, max) in unit of Degree
+NbbLBC,  0.0 , 30.0 , 0.0 , 30.0 , 0.0 , 45.0 , 0.0
+
+
+

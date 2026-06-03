@@ -1,0 +1,57 @@
+.............................Initialization of FDC................................
+!!Added by Hui Zhu, March 25 2016. If you have any question please contact Hui Zhu (zhuhui328@gmail.com)
+!!
+!!
+!!
+!!
+!!Please do NOT add or delete any line!!!
+!!
+!!start initialization
+..............................
+!!!!!!!!!Output file name
+DC_KS14_Dayside_Hiss_L45.plt
+
+!!!!!!!!!Planet
+Earth
+
+!!!!!!!!!NPA,NE,NL
+89 , 211 , 2
+
+!!!!!!!!!L_min*10,L_max*10
+35 , 45
+
+!!!!!!!!!E_min,Emax in unit of keV
+1 , 30000
+
+!!!!!!!!!PA_min,PA_max in unit of Degree
+1 , 89
+
+!!!!!!!!!Kp10,MLT
+40,  14.0
+
+!!!!!!!!!NresType,nres_min,nres_max
+Constant , -10 , 10
+
+!!!!!!!!!DenModel,DenValue in unit of cm^-3,DenLatINdex
+Denton06 , 0.0 , -2.0
+
+!!!!!!!!!Frequency Distribution
+Gaussian
+
+!!!!!!!!!FreqUnit,omega_m_per,d_omega_per,o_lc,o_uc
+Hz , 550,  300,  100,  2000
+
+!!!!!!!!!nint,nint_X,nint_N
+100, 100, 100
+
+!!!!!!!!!lam_min,lam_max in unit of Degree
+0.0,  45.0 
+
+!!!!!!!!!BwType,Bw_Input in unit of pT
+KS14DaysideHiss,  30.0
+
+!!!!!!!!!ThetaType,Theta_Input (center, width, min, max) in unit of Degree
+ObliqueHiss,  0.0 , 30.0 , 0.0 , 70.0
+
+
+
