@@ -1,4 +1,63 @@
-! Integration over latitude
+! ==============================================================================
+! SUBROUTINE: Integration_lambda
+! ==============================================================================
+!
+! PURPOSE:
+!   Computes the bounce-averaged quasi-linear diffusion coefficients
+!   (D_aa, D_ap, D_pp) for a single resonance harmonic by integrating
+!   the local diffusion rate integrand over magnetic latitude (lambda),
+!   from lambda_min to lambda_m (the mirror latitude).
+!
+! INPUTS:
+!   alpha       - Equatorial electron pitch angle [radians]
+!   E           - Electron kinetic energy normalised to rest-mass energy
+!                 (E = gamma - 1, dimensionless)
+!   L           - Magnetic L-shell [Earth radii, dimensionless]
+!   B_m         - Magnetic field strength at the mirror point [T]
+!   lambda_min  - Lower bound of latitude integration (equator or loss cone
+!                 boundary) [radians]
+!   lambda_m    - Upper bound of latitude integration (mirror latitude) [radians]
+!   nint_tmp    - Number of integration steps over lambda
+!   nres        - Resonance harmonic number n (integer, e.g. -1, 0, 1, ...)
+!
+! OUTPUTS:
+!   BavRate(1)  - Bounce-averaged D_aa [s^-1] (pitch-angle diffusion)
+!   BavRate(2)  - Bounce-averaged D_ap [s^-1] (mixed diffusion)
+!   BavRate(3)  - Bounce-averaged D_pp [s^-1] (momentum diffusion)
+!
+! CALLS:
+!   B_field     - Returns magnetic field magnitude at (L, lambda)
+!   int_D_loc   - Returns the lambda-integrand of the diffusion coefficients
+!
+! MODULE DEPENDENCIES:
+!   constants   - Physical constants and unit conversion factors (PI, ...)
+!
+! INTEGRATION METHOD:
+!   D_aa, D_ap: Standard trapezoidal rule with step delta_lambda over
+!               nint_tmp+1 points from lambda_min to lambda_m.
+!
+!   D_pp:       Uses a different scheme at each point, weighted by
+!               2*B_m/|dB/dlambda| * cos(psi) * |delta_psi|, where psi is
+!               the local pitch angle. This accounts for the mirror boundary
+!               condition more carefully, particularly near lambda_m where
+!               psi -> 0. The endpoint (j = nint_tmp+1) is treated separately
+!               using a one-sided finite difference for dB/dlambda.
+!               The final result is divided by 2.
+!
+! NOTES:
+!   - The subroutine returns immediately with BavRate = 0 if delta_lambda <= 0,
+!     i.e. if lambda_m <= lambda_min.
+!   - psi(1) is set to PI/2 (equator, field-aligned particle).
+!   - psi(nint_tmp+1) is set to 0 if B_local > B_m at the mirror point
+!     (particle is at or beyond its mirror point).
+!   - B_field is evaluated at lambda_m + delta_lambda (one step beyond the
+!     mirror point) to allow a centred finite difference for dB at the last
+!     interior point. This point is stored in Bfield(nint_tmp+2).
+!   - nres is correctly passed as intent(in) here. Note that int_D_loc
+!     contains a redundant bare integer declaration of nres alongside its
+!     intent(in) declaration — this is a known bug to be fixed.
+!
+! ==============================================================================
 
 subroutine Integration_lambda(lambda_m,lambda_min,nint_tmp,B_m,alpha,E,L,nres,BavRate)
 use constants

@@ -1,132 +1,178 @@
-!!!! Integration over latitude is in a separate function now Integration_latitude.f90
-!!!! <Dpp> is calculated using an approach from Orlova and Shprits [2011]
+! ==============================================================================
+! SUBROUTINE: sum_n
+! ==============================================================================
+!
+! PURPOSE:
+!   Top-level driver routine. For each row of the input grid (L, E, alpha),
+!   computes the fully bounce-averaged quasi-linear diffusion coefficients
+!   by summing over resonance harmonics:
+!
+!     D_aa, D_ap, D_pp  (pitch-angle, mixed, momentum)
+!
+!   and derives the mixed energy and energy-energy diffusion coefficients
+!   using the relativistic energy-momentum relation:
+!
+!     D_aE = D_ap * (E+2)/(E+1)
+!     D_EE = D_pp * (E+2)^2/(E+1)^2
+!
+!   Results are converted from s^-1 to day^-1 before output.
+!
+!   The full call chain is:
+!     sum_n
+!       -> D_ba               (bounce-average for one harmonic)
+!          -> Integration_lambda
+!             -> int_D_loc
+!                -> D_local_n
+!                   -> WeightFunction  (integrand at one theta point)
+!
+!   The formulation follows:
+!     Albert, J. M. (2007), Simple approximations of quasi-linear diffusion
+!     coefficients, J. Geophys. Res., 112, A12202, doi:10.1029/2007JA012551
+!   which builds on the PADIE framework of:
+!     Glauert, S. A., and R. B. Horne (2005), Calculation of pitch angle and
+!     energy diffusion coefficients with the PADIE code, J. Geophys. Res.,
+!     110, A04206, doi:10.1029/2004JA010851
+!
+!   Wave and plasma parameters used:
+!     - Hiss wave amplitudes from Orlova, Spasojevic & Shprits [GRL, 2014]
+!     - Plasmaspheric density model from Denton et al. [2004, 2006]
+!     - Wave normal angle model from Thorne et al. [2013]
+!     - Resonance order from Mourenas & Ripoll [2012] (if NresType='MR12')
+!     - D_pp bounce-averaging approach from Orlova & Shprits [2011]
+!
+! INPUTS:
+!   InputData2(local_rows2, columns) - Input grid, one row per (L, E, alpha):
+!     column 1: L-shell [Earth radii, dimensionless]
+!     column 2: Kinetic energy [keV]
+!     column 3: Equatorial pitch angle [degrees]
+!   local_rows2    - Number of rows in InputData2
+!   columns        - Number of columns in InputData2
+!   noutput_rows   - Number of rows in OutputData
+!   noutput_columns- Number of columns in OutputData
+!
+! OUTPUTS:
+!   OutputData(noutput_rows, noutput_columns):
+!     column 1: L-shell [Earth radii]
+!     column 2: Kinetic energy [keV]
+!     column 3: Equatorial pitch angle [degrees]
+!     column 4: Bounce-averaged D_aa [day^-1]
+!     column 5: Bounce-averaged D_pp [day^-1]
+!     column 6: Bounce-averaged D_ap [day^-1]
+!
+! CALLS:
+!   resonanceorder  - Computes maximum resonance harmonic (Mourenas & Ripoll 2012)
+!   D_ba            - Bounce-averaged diffusion coefficients for one harmonic
+!
+! MODULE DEPENDENCIES:
+!   constants  - Physical constants (qe, me, c, RAD, ...),
+!                and control parameters:
+!                  NresType    : resonance order mode ('CONSTANT' or 'MR12')
+!                  nres_min    : minimum resonance harmonic (module default for
+!                                'CONSTANT' mode; set locally for 'MR12')
+!                  nres_max    : maximum resonance harmonic (same)
+!
+! NOTES:
+!   - Energy is converted from keV to normalised units internally:
+!       E = E_keV * 1e3 * qe / (me * c^2)   (= gamma - 1, dimensionless)
+!   - Pitch angle is converted from degrees to radians internally.
+!   - All diffusion coefficients are multiplied by 24*3600 to convert s^-1
+!     to day^-1 before being written to OutputData.
+!   - D_aE and D_EE are computed internally but not written to OutputData.
+!     If they are needed downstream, OutputData should be extended to 7+
+!     columns and the assignments below uncommented.
+!
+! ==============================================================================
 
-!!!! The code computes matrices of the diffusion coefficients using realistic hiss waves parameters
-
-!! Grids:
-!!!! Distance L from 1 till 6 with step 0.1
-!!!! Kinetic energy Ek from 100 keV till 10 MeV, 46 points
-!!!! Equatorial pitch angle alpha from 0.6 till 89.6 with step 1, 89 points
-!!!! Kp=4 (for other values of Kp the diffusion coefficients can be scaled using analytical function
-!!!! Daa(Kp)=Daa(Kp=4)*10^{g(Kp)-g(Kp=4)}, where g(Kp)=0.2607*Kp - 0.01547*Kp*Kp)
-
-!! Realistic hiss waves and plasma parameters:
-!!!! Hiss waves parameters are taken from Orlova, Spasojevic and Shprits [GRL, 2014]:
-!!!! Wave amplitude is dependent on L, magnetic latitude, and Kp;
-!!!! Plasmaspheric density is increasing with latitude following Denton et al.[2004, 2006];
-!!!! Gaussian spectrum parameters are delta_f=300.00 Hz, f_m=550.00 Hz,
-!!!! f_lc=100.00 Hz, f_uc=2000.00 Hz;
-!!!! Wave normal angle is increasing with latitude following Thorne et al.[2013];
-!!!! The number of resonances is dependent on distance and energy following
-!!!! Mourenas and Ripoll [2012];
-
-!! Notes about code changes:
-!!!! Added abs(k_vec) to the argument of Bessel function and sign (k_vec) to F3 in WeightFunction subroutine
-!!!! Corrected bug in integration N(omega) in int_N_omega subroutine. It now computes k_vec from the
-!!!! refractive index. Before it used k_vec from resonance condition which is wrong.
-!!!! The code integrates 3 times. Now you can define the number of points for each integral.
-!!!! Before the number of points for integration was the same for each integral.
-!!!! Put the summation over resonances in the main file (to change the number of points in integration
-!!!! over latitude for n=0)
-!!!! Added Theta_wave(L,Kp,lambda,Bw) function to int_D_loc subroutine
-!!!! Added checking the resonance cone. If theta is near to the resonance cone integral N(omega)
-!!!! is computed with large number of points (to "solve" accurately singularity). If theta is larger than
-!!!! the resonance cone we compute two integrals over theta till resonance cone*0.99
-!!!! Added Bw_wave(L,Kp,lambda,Bw) function to int_D_loc subroutine. For lambda>25  we take
-!!!! the same amplitude as for lambda=25
-!!!! Added Denton et al., 2004; 2006 density model for plasmasphere which is dependent on latitude
-!!!! The total number of resonances is now computed using equation from Ripoll and Mourenas, 2012
-!!!! The number of points in integral over latitude is dependent on latitude.
-!!!! The code uses LAPACK library Function
-!!!! Diffusion coefficietns are computed using Albert [2007 JGR] method
-
-subroutine sum_n(InputData2,local_rows2,columns,OutputData,noutput_rows,noutput_columns)
+subroutine sum_n(InputData2, local_rows2, columns, OutputData, noutput_rows, noutput_columns)
 use constants
-  implicit none
+implicit none
 
-  integer,intent(in)::local_rows2
-  integer,intent(in)::columns
+    integer, intent(in) :: local_rows2, columns
+    integer, intent(in) :: noutput_rows, noutput_columns
 
-  integer,intent(in)::noutput_rows, noutput_columns
+    real*8, intent(in)  :: InputData2(local_rows2, columns)
+    real*8, intent(out) :: OutputData(noutput_rows, noutput_columns)
 
-  real*8,intent(in)::InputData2(local_rows2,columns)
-  real*8,intent(out)::OutputData(noutput_rows,noutput_columns)
+    real*8  :: BavDaa, BavDap, BavDaE, BavDpp, BavDEE
+    real*8  :: BavRate(3)
+    real*8  :: L, E, alpha_eq
 
+    integer :: i, resonmax, nres, I_nres
 
-  real*8::BavDaa
-  real*8::BavDap
-  real*8::BavDaE
-  real*8::BavDpp
-  real*8::BavDEE
+    do i = 1, local_rows2
 
-  
-  real*8::BavRate(3)
-    
-  
-  real*8::L
-  real*8::E
-  real*8::alpha_eq
+        L        = InputData2(i,1)
+        E        = InputData2(i,2) * 1.0e3 * qe / (me*c*c)
+        alpha_eq = InputData2(i,3) * RAD
 
+        BavDaa = 0.0
+        BavDap = 0.0
+        BavDaE = 0.0
+        BavDpp = 0.0
+        BavDEE = 0.0
 
-  integer::i
-  integer::resonmax,nres,I_nres
+        if (L <= L_max) then
 
+            select case(NresType)
 
-  do i=1,local_rows2
-     L=InputData2(i,1)
-     E=InputData2(i,2)*1.0e3*qe/(me*c*c)
-     alpha_eq=InputData2(i,3)*RAD
-     BavDaa=0.0
-  BavDap=0.0
-  BavDaE=0.0
-  BavDpp=0.0
-  BavDEE=0.0
-     
+                case('CONSTANT')
+                    ! nres_min and nres_max are used as set in module constants
+                    ! (via the input file).
+                    nres_min = nres_min
+                    nres_max = nres_max
 
+                case('MR12')
+                    call resonanceorder(E, L, resonmax)
+                    nres_min = -resonmax
+                    nres_max =  resonmax
 
-     if(L<=55.0) then
-   select case(NresType)
-	case('CONSTANT')
+                case default
+                    write(*,*) 'ERROR: Invalid NresType = ', trim(NresType)
+                    write(*,*) 'Valid options are: CONSTANT, MR12'
+                    stop
 
-	case('MR12')
-	    call resonanceorder(E,L,resonmax)
-            nres_min=-resonmax
-	    nres_max= resonmax
-        CASE DEFAULT
-            WRITE(*,*) 'Invalid resonance Type.'
-            STOP
-    END SELECT
-     do I_nres=nres_min, nres_max
-       nres=I_nres
-       call D_ba(alpha_eq,E,L,nres,BavRate)
-       BavDaa=BavRate(1)+BavDaa
-       BavDap=BavRate(2)+BavDap
-       BavDpp=BavRate(3)+BavDpp
-     enddo
+            end select
 
-   BavDaE=BavDap*(E+2.0)/(E+1.0)
-   BavDEE=BavDpp*((E+2.0)**2.0)/((E+1.0)**2.0)
-       
-     ! now in unit day^{-1}
-   BavDaa=BavDaa*24.0*3600.0
-   BavDap=BavDap*24.0*3600.0
-   BavDpp=BavDpp*24.0*3600.0
-   BavDaE=BavDaE*24.0*3600.0
-   BavDEE=BavDEE*24.0*3600.0
-     else
-        BavDaa=0.0
-   BavDap=0.0
-   BavDpp=0.0
-   BavDaE=0.0
-   BavDEE=0.0
-     end if
-     
-   OutputData(i,1)=L
-   OutputData(i,2)=InputData2(i,2)
-   OutputData(i,3)=InputData2(i,3)
-   OutputData(i,4)=BavDaa
-   OutputData(i,5)=BavDpp
-   OutputData(i,6)=BavDap      
-  end do
-           
+            do I_nres = nres_min, nres_max
+                nres = I_nres
+                call D_ba(alpha_eq, E, L, nres, BavRate)
+                BavDaa = BavDaa + BavRate(1)
+                BavDap = BavDap + BavRate(2)
+                BavDpp = BavDpp + BavRate(3)
+            end do
+
+            ! Derive energy-related diffusion coefficients from momentum ones
+            BavDaE = BavDap * (E + 2.0) / (E + 1.0)
+            BavDEE = BavDpp * ((E + 2.0)**2.0) / ((E + 1.0)**2.0)
+
+            ! Convert s^-1 to day^-1
+            BavDaa = BavDaa * 24.0 * 3600.0
+            BavDap = BavDap * 24.0 * 3600.0
+            BavDpp = BavDpp * 24.0 * 3600.0
+            BavDaE = BavDaE * 24.0 * 3600.0
+            BavDEE = BavDEE * 24.0 * 3600.0
+
+        else
+
+            BavDaa = 0.0
+            BavDap = 0.0
+            BavDpp = 0.0
+            BavDaE = 0.0
+            BavDEE = 0.0
+
+        end if
+
+        OutputData(i,1) = L
+        OutputData(i,2) = InputData2(i,2)
+        OutputData(i,3) = InputData2(i,3)
+        OutputData(i,4) = BavDaa
+        OutputData(i,5) = BavDpp
+        OutputData(i,6) = BavDap
+        ! D_aE and D_EE are computed above but not currently written to output.
+        ! To include them, extend OutputData to 8 columns and uncomment:
+        ! OutputData(i,7) = BavDaE
+        ! OutputData(i,8) = BavDEE
+
+    end do
+
 end subroutine sum_n

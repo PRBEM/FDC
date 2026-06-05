@@ -1,4 +1,60 @@
-! local diffusion rate at one latitude
+! ==============================================================================
+! SUBROUTINE: D_local_n
+! ==============================================================================
+!
+! PURPOSE:
+!   Computes the local quasi-linear diffusion coefficients (D_aa, D_ap, D_pp)
+!   for a single resonance harmonic at a fixed magnetic latitude (lambda), by
+!   integrating the diffusion coefficient integrand over wave normal angle theta.
+!
+!   The integration uses the trapezoidal rule over a uniform grid in theta,
+!   from theta_min to theta_max (taken from Theta_function). The integrand at
+!   each theta point is provided by WeightFunction.
+!
+!   The result is the local (non-bounce-averaged) diffusion rate. Bounce-
+!   averaging over latitude and summation over resonance harmonics are
+!   performed by the calling routine.
+!
+!
+! INPUTS:
+!   alpha          - Equatorial electron pitch angle [radians]
+!   E              - Electron kinetic energy normalised to rest-mass energy
+!                    (E = gamma - 1, dimensionless)
+!   L              - Magnetic L-shell [Earth radii, dimensionless]
+!   lambda         - Magnetic latitude [radians]
+!   Bw             - RMS wave magnetic field amplitude [T]
+!   Theta_function - Array(7) defining the wave normal angle distribution:
+!                      (1) theta_m1  : mean angle of 1st Gaussian [degrees]
+!                      (2) theta_w1  : width of 1st Gaussian [degrees]
+!                      (3) theta_m2  : mean angle of 2nd Gaussian [degrees]
+!                      (4) theta_w2  : width of 2nd Gaussian [degrees]
+!                      (5) theta_min : lower cutoff of integration range [degrees]
+!                      (6) theta_max : upper cutoff of integration range [degrees]
+!                      (7) theta_q   : relative amplitude of 2nd Gaussian
+!   nres           - Resonance harmonic number n (integer, e.g. -1, 0, 1, ...)
+!
+! OUTPUTS:
+!   DDN(1)         - Local D_aa at this latitude [s^-1] (pitch-angle diffusion)
+!   DDN(2)         - Local D_ap at this latitude [s^-1] (mixed diffusion)
+!   DDN(3)         - Local D_pp at this latitude [s^-1] (momentum diffusion)
+!
+! CALLS:
+!   WeightFunction - Diffusion coefficient integrand at a single theta value
+!
+! MODULE DEPENDENCIES:
+!   constants      - Physical constants and unit conversion factors (RAD, PI, ...)
+!   (nint_X is read from a module: number of theta integration points)
+!
+! INTEGRATION METHOD:
+!   Trapezoidal rule on a uniform grid of nint_X points in theta [radians].
+!   The integrand is weighted by sin(theta) before integration, consistent
+!   with integration over wave normal angle in spherical geometry.
+!
+! NOTES:
+!   - theta_min and theta_max are read in degrees from Theta_function(5:6)
+!     and converted to radians internally.
+!   - nint_X is a global parameter from a module rather than an argument;
+!     this is a known issue to be addressed in future refactoring.
 
 subroutine D_local_n(alpha,E,L,nres,lambda,Bw,Theta_function,DDN)
 use constants
