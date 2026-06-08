@@ -11,8 +11,13 @@
 !   (D_aa, D_ap, D_pp, D_aE, D_EE) on a (L, E, alpha) grid for a specified
 !   wave environment and plasma model.
 !
-! USAGE:
-!   mpirun -np <N> ./FDC_mpi <input_file>
+!   The formulation follows:
+!     Albert, J. M. (2007), Simple approximations of quasi-linear diffusion
+!     coefficients, J. Geophys. Res., 112, A12202, doi:10.1029/2007JA012551
+!   which builds on the PADIE framework of:
+!     Glauert, S. A., and R. B. Horne (2005), Calculation of pitch angle and
+!     energy diffusion coefficients with the PADIE code, J. Geophys. Res.,
+!     110, A04206, doi:10.1029/2004JA010851
 !
 ! INPUT FILE FORMAT:
 !   The input file is read sequentially. Comment lines (starting with !)
@@ -42,6 +47,8 @@
 !   - Pitch angle is in degrees; converted to radians inside sum_n
 !   - nint_zero_res = 3*nint (finer grid for nres=0 resonance)
 !   - nint_N_res_cone = 3*nint_N (finer grid near resonance cone)
+!   - All model name strings are case-insensitive (converted to uppercase
+!     internally via the to_upper function)
 !
 ! OUTPUTS:
 !   - Output file: Tecplot ASCII format with columns
@@ -55,15 +62,18 @@
 !   constants - All run parameters are stored here after reading
 !
 ! NOTES:
-!   - All model name strings are converted to uppercase on reading via
-!     the internal to_upper function, so input files are case-insensitive
-!     for model names.
-!   - The first 11 lines of the input file are skipped (comment header).
 !   - B0 (equatorial surface field) for known planets is hardcoded:
 !       EARTH:   2.997527836235779e-5 T
 !       JUPITER: 4.2818e-4 T
 !       SATURN:  0.2e-4 T
 !       DIPOLE:  read from input file in nT, converted to T (* 1e-9)
+!   - DispersionType is hardcoded to 'COLD' (cold plasma dispersion relation).
+!     This is the only currently implemented option. When the hot plasma
+!     (WHAMP) interface is implemented, DispersionType should be read from
+!     the input file instead. See Module_Dispersion.f90 for the interface.
+!   - The DIPOLE planet case in B_field does not apply the L^3 scaling,
+!     making the field independent of L-shell. This may be intentional for
+!     uniform-field test cases, but should be verified before using.
 !
 ! ==============================================================================
 

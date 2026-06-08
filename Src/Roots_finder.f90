@@ -29,6 +29,12 @@
 !   lambda  - Magnetic latitude [radians]
 !   nres    - Resonance harmonic number n (integer, e.g. -1, 0, 1, ...)
 !   theta   - Wave normal angle [radians]
+!   omega_e    - Electron gyrofrequency [rad/s]
+!   omega_pe   - Electron plasma frequency [rad/s]
+!   omega_i    - Ion gyrofrequency [rad/s]
+!   omega_pi   - Ion plasma frequency [rad/s]
+!   omega_lc   - Lower frequency cutoff [rad/s]
+!   omega_uc   - Upper frequency cutoff [rad/s]
 !
 ! OUTPUTS:
 !   roots(4) - Up to 4 resonant frequencies [rad/s]. Unused slots are set
@@ -37,37 +43,16 @@
 !
 ! MODULE DEPENDENCIES:
 !   constants  - sqe, and indirectly via called routines
-!   variables  - READS:  omega_e, omega_pe, omega_i, omega_pi,
-!                        omega_lc, omega_uc (set by Freq_Spectral/WeightFunction)
-!                WRITES: a1, a2, a3, a4, a5, a6 (polynomial coefficients,
-!                        also used by WeightFunction after this call returns)
 !
 ! CALLS:
 !   Local_alpha  - Converts equatorial pitch angle to local pitch angle
 !   zrhqr2       - LAPACK-based polynomial root finder (degree 10, nres /= 0)
 !   zrhqr3       - LAPACK-based polynomial root finder (degree 3,  nres = 0)
 !
-! SIDE EFFECTS:
-!   Writes a1-a6 to module variables. These are combinations of the plasma
-!   frequencies used both here (as polynomial coefficients a7-a16) and
-!   subsequently in WeightFunction for the analytic dS/dw, dR/dw, dL/dw
-!   dispersion derivatives. WeightFunction silently depends on Roots_finder
-!   having been called first to populate a1-a6. This implicit dependency
-!   is a known issue to be addressed in a future refactoring step.
-!
-!   Definitions:
-!     a1 = omega_i^2 + omega_e^2 + omega_pe^2 + omega_pi^2
-!     a2 = (omega_i*omega_e)^2 + (omega_pe*omega_i)^2 + (omega_pi*omega_e)^2
-!     a3 = omega_i + sqe*omega_e
-!     a4 = omega_i*sqe*omega_e - omega_pe^2 - omega_pi^2
-!     a5 = 0.0  (term analytically zero; retained for structural completeness)
-!     a6 = omega_pi^2 + omega_pe^2
-!
 ! NOTES:
 !   - a5 is hardcoded to 0.0. The original commented-out definition was
 !     -(omega_pi^2 * sqe*omega_e + omega_pe^2 * omega_i). Whether the zero
-!     value is a valid simplification or a bug should be verified against
-!     Albert (2007).
+!     value is a valid simplification or a bug should be verified.
 !   - For nres = 0, only even powers of omega appear, so the polynomial is
 !     solved in omega^2 and roots are recovered by taking the square root.
 !     Coefficients are taken from alternating entries of the general coeff()
@@ -80,13 +65,17 @@
 !
 ! ==============================================================================
 
-subroutine Roots_finder(alpha, E, L, lambda, nres, theta, roots)
+subroutine Roots_finder(alpha, E, L, lambda, nres, theta, &
+                        omega_e, omega_pe, omega_i, omega_pi, &
+                        omega_lc, omega_uc, &
+                        roots)
 use constants
-use variables
 implicit none
 
     real*8, intent(in)  :: alpha, E, L, lambda, theta
     integer, intent(in) :: nres
+    real*8, intent(in)  :: omega_e, omega_pe, omega_i, omega_pi
+    real*8, intent(in)  :: omega_lc, omega_uc
     real*8, intent(out) :: roots(4)
 
     real*8 :: coeff(11)
@@ -129,7 +118,7 @@ implicit none
     a2 = (omega_i*omega_e)**2.0 + (omega_pe*omega_i)**2.0 + (omega_pi*omega_e)**2.0
     a3 = omega_i + real(sqe)*omega_e
     a4 = omega_i*real(sqe)*omega_e - omega_pe**2.0 - omega_pi**2.0
-    a5 = 0.0   ! analytically zero; see note in header regarding Albert (2007)
+    a5 = 0.0   ! analytically zero; see note in header
     a6 = omega_pi**2.0 + omega_pe**2.0
 
     ! Intermediate polynomial coefficients (local only)

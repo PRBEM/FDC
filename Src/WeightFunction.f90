@@ -9,7 +9,7 @@
 !
 !   This subroutine is called by D_local_n, which integrates the output
 !   over theta to produce the local diffusion coefficients. WeightFunction
-!   itself returns values that are NOT yet integrated — they are the
+!   itself returns values that are NOT yet integrated. They are the
 !   integrand at one theta point, to be weighted by sin(theta)*dtheta
 !   in the calling routine.
 !
@@ -73,8 +73,6 @@
 !
 ! MODULE DEPENDENCIES:
 !   constants  - Physical constants (c, qe, me, mi, PI, ...)
-!   variables  - Shared plasma frequency variables written as side effects:
-!                omega_e, omega_pe, omega_i, omega_pi
 !   dispersion - Dispersion relation interface (Module_Dispersion.f90)
 !
 ! NOTES:
@@ -89,7 +87,6 @@
 
 subroutine WeightFunction(alpha, E, L, lambda, Bw, Theta_function, nres, theta, WeightValue)
 use constants
-use variables
 use dispersion
 implicit none
 
@@ -115,6 +112,10 @@ implicit none
     real*8 :: B_local, B_eq
     real*8 :: omega_e_eq
     real*8 :: Ne_local
+
+    ! --- Local plasma frequencies ---
+    real*8 :: omega_e, omega_pe, omega_i, omega_pi
+    real*8 :: omega_lc, omega_uc, omega_m, d_omega
 
     ! --- Wave normal angle in tan form ---
     real*8 :: X, X_m1, X_w1, X_m2, X_w2
@@ -186,10 +187,7 @@ implicit none
     call B_field(L, lambda,     B_local)
     call B_field(L, lambda_eq,  B_eq)
 
-    ! Write plasma frequencies to module variables (used by Roots_finder).
-    ! int_N_omega now receives these as explicit arguments.
-    ! Note: the remaining shared state (for Roots_finder) is a known issue
-    ! to be addressed in a future refactoring step.
+    ! Compute local plasma frequencies
     omega_e  = qe * B_local / me
     omega_e_eq = qe * B_eq / me
     omega_i  = omega_e * me / mi
@@ -207,7 +205,10 @@ implicit none
     ! -------------------------------------------------------------------------
     ! Find resonant frequencies
     ! -------------------------------------------------------------------------
-    call Roots_finder(alpha, E, L, lambda, nres, theta, roots)
+    call Roots_finder(alpha, E, L, lambda, nres, theta, &
+                      omega_e, omega_pe, omega_i, omega_pi, &
+                      omega_lc, omega_uc, &
+                      roots)
 
     ! -------------------------------------------------------------------------
     ! Loop over resonant frequency roots
@@ -307,7 +308,9 @@ implicit none
                           / abs(1.0 - dw_dk_par/vpar)
 
                 ! G1: frequency-weighted wave power spectral density
-                call PowerSpectralDensity(L, lambda, omega_e_eq, omega, PSD)
+                call PowerSpectralDensity(L, lambda, omega_e_eq, omega, &
+                          omega_m, omega_lc, omega_uc, d_omega, &
+                          PSD)
                 G1 = omega_e * PSD
 
                 ! G2: normalised wave normal angle distribution

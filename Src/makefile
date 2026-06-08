@@ -8,8 +8,7 @@
 #   2. All remaining .f90 files compiled together.
 #
 # Note: *.f90 in step 2 will re-compile the module files, but since their
-# .mod files already exist this is harmless. A proper dependency-tracked
-# Makefile would avoid this; see comment at bottom for a future improvement.
+# .mod files already exist this is harmless.
 
 CC     = mpiifort
 CCf90  = mpif90

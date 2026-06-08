@@ -42,8 +42,6 @@
 !
 ! MODULE DEPENDENCIES:
 !   constants  - FreqDistribution, MLT, RAD, PI
-!   variables  - omega_m, d_omega, omega_lc, omega_uc (read from module;
-!                set by WeightFunction via Freq_Spectral before this call).
 !
 ! CALLS:
 !   errorfunction - Error function erf(x), used in GAUSSIAN normalisation
@@ -67,12 +65,15 @@
 !
 ! ==============================================================================
 
-subroutine PowerSpectralDensity(L, Lambda, omega_e_eq, Freq, PSD)
+subroutine PowerSpectralDensity(L, Lambda, omega_e_eq, Freq, &
+                                omega_m, omega_lc, omega_uc, d_omega, &
+                                PSD)
+
 use constants
-use variables
 implicit none
 
     real*8, intent(in)  :: L, Lambda, Freq, omega_e_eq
+    real*8, intent(in)  :: omega_m, omega_lc, omega_uc, d_omega
     real*8, intent(out) :: PSD
 
     real*8 :: lambda_deg
