@@ -45,7 +45,7 @@
 !
 ! NOTES:
 !   - For models that set only omega_lc and omega_uc (2017CHORUS,
-!     18LBCHORUS, 18UBCHORUS, 2026LBCHORUS, 2026UBCHORUS), omega_m and
+!     2018LBCHORUS, 2018UBCHORUS, 2026LBCHORUS, 2026UBCHORUS), omega_m and
 !     d_omega are left undefined on output. For these models, the spectral
 !     shape is defined entirely within PowerSpectralDensity via its
 !     polynomial fit, and omega_m/d_omega are not needed.
