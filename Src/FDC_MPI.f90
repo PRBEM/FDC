@@ -264,7 +264,7 @@ implicit none
                   "'omega_lc/Omega_e=' f7.2,1X ',' 1X " // &
                   "'omega_uc/Omega_e=' f7.2,1X)") omega_m_per, d_omega_per, o_lc, o_uc
         case('NBBLBC', 'NBBUBC', '2016HISS', '2017CHORUS', &
-             '2018LBCHORUS', '2026LBCHORUS', '2026UBCHORUS')
+             '2018LBCHORUS', '2018UBCHORUS', '2026LBCHORUS', '2026UBCHORUS')
             write(unit_log,"('Frequency unit type:'4X,A20)") FreqUnit
         case default
             write(unit_log,"('Invalid Frequency Unit.'4x,A10)") FreqUnit
