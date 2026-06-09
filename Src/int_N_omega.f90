@@ -129,11 +129,10 @@ implicit none
     N_of_omega = 0.0
 
     do i = 1, nint_N_tmp
-
         theta = theta_min / 180.0 * PI + step * (real(i) - 1.0)
         X     = tan(theta)
 
-        ! Dispersion properties at this theta
+        ! Step 1: get n_ref_ind2 with k_vec=0
         call Get_dispersion_properties(omega, 0.0d0, theta, &
                                        omega_e, omega_pe, omega_i, omega_pi, &
                                        DP)
@@ -142,7 +141,11 @@ implicit none
         if (DP%n_ref_ind2 < 0.0) then
             Ntmp = 0.0
         else
+            ! Step 2: compute actual k_vec, then get dw_dk with correct k_vec
             k_vec = sqrt(DP%n_ref_ind2) * omega / c
+            call Get_dispersion_properties(omega, k_vec, theta, &
+                                           omega_e, omega_pe, omega_i, omega_pi, &
+                                           DP)
 
             Ntmp = sin(theta) &
                    * (exp(-((X - X_m1)/X_w1)**2.0) &
@@ -156,7 +159,6 @@ implicit none
         else
             N_of_omega = N_of_omega + Ntmp
         end if
-
     end do
 
     N_of_omega = N_of_omega * step
