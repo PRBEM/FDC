@@ -195,6 +195,10 @@ implicit none
     omega_i  = omega_e * me / mi
     omega_pe = sqrt(Ne_local * qe * qe / (C0 * me))
     omega_pi = omega_pe * sqrt(me / mi)
+    omega_m   = 0.0d0
+    d_omega   = 0.0d0
+    omega_lc  = 0.0d0
+    omega_uc  = 0.0d0
 
     call Freq_Spectral(L, lambda, omega_e_eq, omega_m, d_omega, omega_lc, omega_uc)
 
@@ -224,7 +228,6 @@ implicit none
         else
 
             omega = roots(i)
-
             ! Wave vector from resonance condition
             k_vec = (omega - (real(nres) * real(sqe) * omega_e) / gamma1) &
                     / (c * betta * cos(alpha_ne) * cos(theta))
@@ -232,7 +235,6 @@ implicit none
             ! Consistency check: k_vec should be positive for nres > 0
             if ((nres > 0) .and. (k_vec < 0)) then
                 write(*,*) 'ERROR: negative k_vec for positive resonance harmonic'
-                write(*,*) 'N = ', nres, '  Root = ', omega
                 stop
             end if
 
@@ -315,6 +317,7 @@ implicit none
                                  theta_max_eff, nres, omega, &
                                  omega_e, omega_pe, omega_i, omega_pi, &
                                  res_cone, N_of_omega)
+
                 G2 = (exp(-((X - X_m1)/X_w1)**2.0) &
                      + theta_q * exp(-((X - X_m2)/X_w2)**2.0)) / N_of_omega
 
