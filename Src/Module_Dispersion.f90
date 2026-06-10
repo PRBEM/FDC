@@ -89,7 +89,62 @@ type :: DispersionProperties
     ! real*8 :: bx, by, bz  ! normalised magnetic field components
  
 end type DispersionProperties
+
+! ==============================================================================
+! DERIVED TYPE: WHAMPCurve
+! ==============================================================================
+!
+! PURPOSE:
+!   Holds the hot plasma dispersion surface computed by WHAMP for a single
+!   local plasma condition (fce, fpe). Computed once per (L, lambda) point
+!   in Integration_lambda and passed down the call chain to WeightFunction
+!   and int_N_omega.
+!
+!   The surface represents omega(k, theta), the dispersion relation as a
+!   function of total wave vector magnitude k and wave normal angle theta.
+!   WHAMP is called once per theta point, scanning k at fixed theta by
+!   setting k_perp = k*sin(theta) and k_par = k*cos(theta).
+!
+!   At runtime, for each theta point in the FDC integration, the code
+!   searches the 1D slice omega(k) at that theta to find the resonant k
+!   satisfying the cyclotron resonance condition:
+!     omega(k, theta) - k*cos(theta)*v_par - n*Omega_e/gamma = 0
+!
+! FIELDS:
+!   n_k       - Number of k points per theta slice
+!   n_theta   - Number of theta points
+!   fce_khz   - Electron gyrofrequency [kHz]
+!   fpe_khz   - Electron plasma frequency [kHz]
+!   theta     - Wave normal angle grid [radians], size (n_theta)
+!   k         - Total wave vector magnitude in SI units [rad/m], size (n_k)
+!   k_whamp   - k in WHAMP normalised units (k*c/Omega_e), size (n_k)
+!   omega     - Wave frequency [rad/s], size (n_theta, n_k)
+!   dw_dk     - Group velocity dω/dk [m/s], size (n_theta, n_k)
+!   valid     - True if WHAMP converged at this (theta, k) point,
+!               size (n_theta, n_k)
+!
+! NOTES:
+!   - n_k and n_theta are set by WHAMP_N_K and WHAMP_N_THETA in module
+!     constants
+!   - Only points where valid=.true. should be used for interpolation
+!   - For parallel propagation only (theta=0), n_theta=1
+!   - fce_khz and fpe_khz stored for reference/debugging
+!
+! ==============================================================================
+type :: WHAMPCurve
+    integer :: n_k              ! number of k points per theta slice
+    integer :: n_theta          ! number of theta points
+    real*8  :: fce_khz          ! electron gyrofrequency [kHz]
+    real*8  :: fpe_khz          ! electron plasma frequency [kHz]
  
+    real*8,  allocatable :: theta(:)      ! wave normal angle [rad], (n_theta)
+    real*8,  allocatable :: k(:)          ! wave vector SI [rad/m], (n_k)
+    real*8,  allocatable :: k_whamp(:)    ! wave vector WHAMP units, (n_k)
+    real*8,  allocatable :: omega(:,:)    ! frequency [rad/s], (n_theta, n_k)
+    real*8,  allocatable :: dw_dk(:,:)    ! group velocity [m/s], (n_theta, n_k)
+    logical, allocatable :: valid(:,:)    ! convergence flag, (n_theta, n_k)
+end type WHAMPCurve
+
  
 contains
  
@@ -510,5 +565,212 @@ implicit none
  
 end subroutine cold_plasma_polarisation
  
+! ==============================================================================
+! SUBROUTINE: get_whamp_dispersion
+! ==============================================================================
+!
+! PURPOSE:
+!   Computes the hot plasma dispersion surface omega(k, theta) for a given
+!   local plasma condition (fce, fpe) by calling the WHAMP engine library.
+!   Called once per (L, lambda) point in Integration_lambda.
+!
+!   For each theta point, WHAMP is called with:
+!     k_perp = k * sin(theta)  (WHAMP P parameter)
+!     k_par  = k * cos(theta)  (WHAMP Z parameter)
+!   where k is scanned over WHAMP_N_K log-spaced points.
+!
+!   Results are stored in a WHAMPCurve instance and passed down the FDC
+!   call chain to WeightFunction and int_N_omega.
+!
+! INPUTS:
+!   fce_khz   - Electron gyrofrequency [kHz]
+!   fpe_khz   - Electron plasma frequency [kHz]
+!   theta_min - Minimum wave normal angle [radians]
+!   theta_max - Maximum wave normal angle [radians]
+!
+! OUTPUTS:
+!   curve     - WHAMPCurve instance with dispersion surface omega(k, theta)
+!
+! MODULE DEPENDENCIES:
+!   constants   - WHAMP_N_K, WHAMP_N_THETA, hot plasma parameters
+!   comin       - WHAMP input module (DN, TA, AA, ASS, VD, XC, PM, ZM, XOI, PZL)
+!   comoutput   - WHAMP output module (fOUT, VGZOUT, kparOUT, kperpOUT,
+!                                      flagSolutionFoundOUT)
+!
+! CALLS:
+!   whamp_engine  - WHAMP dispersion relation solver (from libwhamp.a)
+!
+! NOTES:
+!   - Hot electron population is fixed: 10% abundance, T_par=15 keV,
+!     T_perp/T_par=2, proton ions. These are hardcoded for now and should
+!     be moved to module constants or input file in a future version.
+!   - WHAMP k normalisation: k_WHAMP = k * c / Omega_e
+!     Convert to SI: k_SI = k_WHAMP * Omega_e / c = k_WHAMP * 2*pi*fce/c
+!   - Starting frequency XOI set to 0.05 * fce_khz (middle of hiss band)
+!   - Log-spaced k grid from 10^WHAMP_K_MIN to 10^WHAMP_K_MAX
+!   - For parallel propagation (theta=0), k_perp=0 exactly
+!
+! ==============================================================================
+subroutine get_whamp_dispersion(fce_khz, fpe_khz, theta_min, theta_max, curve)
+use comin
+use comoutput
+implicit none
  
+    real*8, intent(in)               :: fce_khz, fpe_khz
+    real*8, intent(in)               :: theta_min, theta_max
+    type(WHAMPCurve), intent(out)    :: curve
+ 
+    ! Local variables
+    integer :: i_theta, i_k
+    real*8  :: theta, k_whamp, k_si, omega_e_rads
+    real*8  :: k_min_exp, k_max_exp, k_step_exp
+    real*8  :: ne_total, ne_cold, ne_hot
+ 
+    ! Hot plasma parameters (fixed for now)
+    real*8, parameter :: hot_fraction  = 0.1d0    ! 10% hot electrons
+    real*8, parameter :: T_cold_keV    = 0.001d0  ! cold species temperature
+    real*8, parameter :: T_hot_par_keV = 15.0d0   ! hot electron T_par
+    real*8, parameter :: T_hot_anis    = 2.0d0    ! T_perp/T_par for hot electrons
+    real*8, parameter :: k_min_exp_val = -3.0d0   ! k grid: 10^-3 to 10^0
+    real*8, parameter :: k_max_exp_val =  0.0d0
+    integer, parameter :: n_k          = WHAMP_N_K
+    integer, parameter :: n_theta      = WHAMP_N_THETA
+ 
+    ! Allocate curve arrays
+    curve%n_k     = n_k
+    curve%n_theta = n_theta
+    curve%fce_khz = fce_khz
+    curve%fpe_khz = fpe_khz
+ 
+    allocate(curve%theta(n_theta))
+    allocate(curve%k(n_k))
+    allocate(curve%k_whamp(n_k))
+    allocate(curve%omega(n_theta, n_k))
+    allocate(curve%dw_dk(n_theta, n_k))
+    allocate(curve%valid(n_theta, n_k))
+ 
+    curve%omega  = 0.0d0
+    curve%dw_dk  = 0.0d0
+    curve%valid  = .false.
+ 
+    ! Omega_e in rad/s (for unit conversions)
+    omega_e_rads = 2.0d0 * PI * fce_khz * 1.0d3
+ 
+    ! Compute plasma densities from fce and fpe
+    ! ne = (fpe/fce)^2 * fce^2 * 4*pi^2 * eps0 * me / qe^2
+    ! Note: fpe^2 = ne * qe^2 / (eps0 * me) => ne = (2*pi*fpe)^2 * eps0 * me / qe^2
+    ne_total = (2.0d0 * PI * fpe_khz * 1.0d3)**2 * C0 * me / (qe * qe)
+    ne_cold  = (1.0d0 - hot_fraction) * ne_total
+    ne_hot   = hot_fraction * ne_total
+ 
+    ! Set up WHAMP k grid (log-spaced in WHAMP units)
+    ! k_whamp stores log10(k) — actual k = 10^k_whamp
+    k_step_exp = (k_max_exp_val - k_min_exp_val) / real(n_k - 1, 8)
+    do i_k = 1, n_k
+        curve%k_whamp(i_k) = k_min_exp_val + (i_k - 1) * k_step_exp
+        curve%k(i_k) = 10.0d0**curve%k_whamp(i_k) * omega_e_rads / c
+    end do
+ 
+    ! Set up theta grid
+    do i_theta = 1, n_theta
+        if (n_theta == 1) then
+            curve%theta(i_theta) = theta_min
+        else
+            curve%theta(i_theta) = theta_min + &
+                (theta_max - theta_min) / real(n_theta - 1, 8) * (i_theta - 1)
+        end if
+    end do
+ 
+    ! -------------------------------------------------------------------------
+    ! Set up WHAMP comin module variables (plasma parameters)
+    ! Species: cold electrons (90%), hot anisotropic electrons (10%), protons
+    ! -------------------------------------------------------------------------
+    DN      = 0.0d0
+    TA      = 0.0d0
+    DD      = 1.0d0
+    AA      = 1.0d0
+    ASS     = 0.0d0
+    VD      = 0.0d0
+ 
+    DN(1)   = ne_cold           ! cold electrons [m^-3]
+    DN(2)   = ne_hot            ! hot electrons  [m^-3]
+    DN(3)   = ne_total          ! cold protons   [m^-3]
+ 
+    TA(1)   = T_cold_keV        ! cold electrons T_par [keV]
+    TA(2)   = T_hot_par_keV     ! hot electrons  T_par [keV]
+    TA(3)   = T_cold_keV        ! cold protons   T_par [keV]
+ 
+    AA(1,1) = 1.0d0             ! cold electrons T_perp/T_par = 1 (isotropic)
+    AA(2,1) = T_hot_anis        ! hot electrons  T_perp/T_par = 2
+    AA(3,1) = 1.0d0             ! cold protons   T_perp/T_par = 1 (isotropic)
+ 
+    ASS(1)  = 0.0d0             ! electrons (mass=0 means electron mass)
+    ASS(2)  = 0.0d0             ! electrons
+    ASS(3)  = 1.0d0             ! protons (mass=1 proton mass)
+ 
+    XC      = fce_khz           ! electron gyrofrequency [kHz]
+    PZL     = 1.0d0             ! log scale for k grid
+    XOI     = 0.05d0 / fce_khz      ! starting frequency: 0.5 kHz in omega/Omega_e units
+ 
+    cycleZFirst = 1             ! vary k_par first (Z varies in outer loop)
+ 
+    ! -------------------------------------------------------------------------
+    ! Call WHAMP for each theta point
+    ! -------------------------------------------------------------------------
+    do i_theta = 1, n_theta
+        theta = curve%theta(i_theta)
+ 
+        ! Set k grid: scan k_par = k*cos(theta), k_perp = k*sin(theta)
+        ! PM = [p_min, p_max, p_step] for k_perp (in log scale)
+        ! ZM = [z_min, z_max, z_step] for k_par (in log scale)
+        ! For log scale: actual k = 10^PM/ZM values
+        ! We want k_par = k*cos(theta) and k_perp = k*sin(theta)
+        ! In log scale: log10(k_par) = log10(k) + log10(cos(theta))
+        !               log10(k_perp) = log10(k) + log10(sin(theta))
+ 
+        if (abs(theta) < 1.0d-6) then
+            ! Parallel propagation: use log scale for k_par
+            ! k_perp set to single point at 0 (PM(1)=PM(2) triggers kperpSize=1)
+            PZL   = 1.0d0
+            PM(1) = -10.0d0   ! effectively k_perp = 0 (10^-10 ~ 0)
+            PM(2) = -10.0d0
+            PM(3) = 1.0d0
+            ZM(1) = k_min_exp_val
+            ZM(2) = k_max_exp_val
+            ZM(3) = k_step_exp
+        else
+            ! Oblique propagation: use log scale
+            PZL   = 1.0d0
+            PM(1) = k_min_exp_val + log10(sin(theta))
+            PM(2) = k_max_exp_val + log10(sin(theta))
+            PM(3) = k_step_exp
+            ZM(1) = k_min_exp_val + log10(cos(theta))
+            ZM(2) = k_max_exp_val + log10(cos(theta))
+            ZM(3) = k_step_exp
+        end if
+ 
+        call whamp_engine
+ 
+        ! Extract results from comoutput arrays
+        do i_k = 1, n_k
+            if (flagSolutionFoundOUT(1, i_k) == 1) then
+                curve%valid(i_theta, i_k) = .true.
+                ! fOUT stores X = omega/Omega_e (dimensionless)
+                ! Convert to rad/s: omega = X * Omega_e = X * 2*pi*fce_khz*1e3
+                curve%omega(i_theta, i_k) = &
+                    real(fOUT(1, i_k)) * omega_e_rads
+                ! Group velocity: VGZOUT is normalised to thermal velocity
+                ! Convert to m/s: dw_dk = VGZOUT * v_th * Omega_e/c
+                ! where v_th = c/CV (CV computed by WHAMP internally)
+                ! For now store the WHAMP normalised value and convert later
+                ! TODO: confirm exact normalisation of VGZOUT
+                curve%dw_dk(i_theta, i_k) = VGZOUT(1, i_k)
+            end if
+        end do
+ 
+    end do
+ 
+end subroutine get_whamp_dispersion
+
+
 end module dispersion
