@@ -4,23 +4,23 @@
 !
 ! PURPOSE:
 !   Top-level MPI parallelisation routine. Constructs the full (L, E, alpha)
-!   computation grid, distributes grid points across MPI processes in chunks,
-!   collects results, and writes the output file.
+!   computation grid, distributes grid points across MPI processes, collects
+!   results, and writes the output file.
 !
-!   Uses a master/slave pattern with chunked communication:
+!   Uses a master/slave pattern:
 !     Master (rank 0):
 !       1. Constructs the full input grid of (L, E, alpha) points
 !       2. Opens the output file and writes the header
-!       3. Sends each slave its entire chunk of grid points in one message
-!       4. Receives each slave's results in one message and writes to file
+!       3. Sends grid points one at a time to slave processes
+!       4. Receives computed diffusion coefficients from slaves
+!       5. Writes results to the output file
+!       6. Closes the output file
 !
 !     Slaves (ranks 1 to numprocs-1):
-!       1. Receive entire chunk of grid points
-!       2. Loop over chunk, calling sum_n for each point
-!       3. Send all results back to master in one message
-!
-!   Chunked communication reduces MPI messages from ~2*rows to
-!   2*(numprocs-1), significantly reducing communication overhead.
+!       1. Receive a grid point (L, E, alpha) from master
+!       2. Call sum_n to compute bounce-averaged diffusion coefficients
+!       3. Send results back to master
+!       4. Repeat for all assigned grid points
 !
 !   Grid construction:
 !     L     : uniform spacing from L_min to L_max, NL points
@@ -31,9 +31,6 @@
 !     L [Earth radii], E [keV], alpha [degrees],
 !     Daa [day^-1], Dpp [day^-1], Dap [day^-1]
 !
-!   Output row order is preserved: results are written in the same order
-!   as the input grid (L outer loop, E middle loop, alpha inner loop).
-!
 ! CALLS:
 !   sum_n       - Computes bounce-averaged diffusion coefficients for one
 !                 (L, E, alpha) point, summing over resonance harmonics
@@ -43,14 +40,18 @@
 !                 unit_output, unit_log, Output_file
 !
 ! NOTES:
-!   - The grid is hardcoded to a maximum of 1,200,000 points.
-!     If NL*NE*NPA exceeds this, the code will overflow.
-!   - chunk_size and all array indices are plain integer (32-bit) throughout
-!     to avoid MPI type mismatch issues.
-!   - Load is distributed so that remainder rows go to the lowest-ranked
-!     slaves (ranks 1 to row_remainder).
-!   - Results are received and written in slave rank order (1, 2, ...,
-!     numprocs-1), preserving the input grid row order.
+!   - PERFORMANCE: currently sends one grid point per MPI message
+!     (noutput_rows=1). For large grids (~1.1M points) this generates
+!     ~2.2M messages, which has significant communication overhead.
+!     A future improvement would be to batch multiple points per message.
+!     The commented-out MPI I/O block at the top of the original was an
+!     early attempt to address this.
+!   - The grid size is hardcoded to a maximum of 1,200,000 points
+!     (InputData(1200000,3)), sufficient for 89*211*61 ~ 1.1M points.
+!     If NL*NE*NPA exceeds this, the code will silently overflow.
+!     A future improvement would use allocatable arrays sized from NL*NE*NPA.
+!   - The load is distributed so that remainder rows (mod(rows, numprocs-1))
+!     are assigned to the lowest-ranked slaves (ranks 1 to row_remainder).
 !
 ! ==============================================================================
 
@@ -60,22 +61,23 @@ implicit none
 
     include "mpif.h"
 
-    integer, parameter :: columns         = 3   ! L, Energy, pitch angle
-    integer, parameter :: noutput_columns = 6   ! Daa, Dpp, Dap, L, E, alpha
-    integer, parameter :: max_rows        = 1200000
-
-    ! Grid dimensions and partitioning — all plain integer
-    integer :: rows, row_number, row_remainder
-    integer :: chunk_size, start_row
+    ! Grid dimensions
+    integer :: rows
+    integer, parameter :: columns = 3   ! L, Energy, pitch angle
 
     ! Grid point temporaries
     real*8 :: Ltemp, Etemp, PAtemp
 
+    ! MPI partitioning
+    integer   :: local_rows, start_row, end_row
+    integer   :: noutput_rows, noutput_columns
+    integer*8 :: row_number, row_remainder
+
     ! Data arrays
-    real*8 :: InputData(max_rows, columns)
+    real*8, target      :: InputData(1200000, columns)
     real*8, allocatable :: LocalData(:,:)
-    real*8, allocatable :: OutputData(:,:)
-    real*8, allocatable :: RecvData(:,:)
+    real*8, pointer     :: SendData(:,:)
+    real*8, allocatable :: OutputData(:,:), RecvData(:)
 
     ! MPI variables
     integer :: ierr, numprocs, mype, master
@@ -89,22 +91,20 @@ implicit none
     rows   = NL * NE * NPA
     master = 0
 
-    ! Partition rows across slaves
-    row_remainder = mod(rows, numprocs-1)
-    row_number    = (rows - row_remainder) / (numprocs - 1)
-
     ! -------------------------------------------------------------------------
-    ! MASTER: build grid, send chunks, receive and write results
+    ! MASTER: build grid, distribute work, collect and write results
     ! -------------------------------------------------------------------------
     if (mype == master) then
 
         ! Build input grid
+        ! L: uniform spacing; E: logarithmic spacing; alpha: uniform spacing
         do i = 1, NL
             if (NL == 1) then
                 Ltemp = L_min
             else
                 Ltemp = (L_max - L_min) / (NL - 1.0) * (i - 1.0) + L_min
             end if
+
             do j = 1, NE
                 if (NE == 1) then
                     Etemp = E_min
@@ -112,6 +112,7 @@ implicit none
                     Etemp = 10**((log10(E_max) - log10(E_min)) &
                                  / (NE - 1.0) * (j - 1.0) + log10(E_min))
                 end if
+
                 do k = 1, NPA
                     PAtemp = (PA_max - PA_min) / (NPA - 1.0) * (k - 1.0) + PA_min
                     InputData(((i-1)*NE + (j-1))*NPA + k, 1) = Ltemp
@@ -130,92 +131,94 @@ implicit none
               NPA, NE, NL
         write(unit_output, "(/)")
 
+        ! Partition and distribute grid points to slaves
+        row_remainder = mod(rows, numprocs-1)
+        row_number    = (rows - row_remainder) / (numprocs - 1d0)
+        noutput_rows    = 1
+        noutput_columns = 6
+
+        allocate(RecvData(noutput_rows * noutput_columns))
+
         write(unit_log, "(I6 4x I6 4X I6 4x I6)") &
               rows, numprocs-1, row_number, row_remainder
 
-        ! Send each slave its chunk in one message
-        ! Use a contiguous temporary buffer to avoid memory layout mismatch
-        ! between InputData(max_rows, columns) and LocalData(chunk_size, columns)
-        start_row = 1
-        do i = 1, numprocs-1
-            if (i <= row_remainder) then
-                chunk_size = row_number + 1
-            else
-                chunk_size = row_number
-            end if
-
-            block
-                real*8 :: SendBuf(chunk_size, columns)
-                integer :: m
-                do m = 1, chunk_size
-                    SendBuf(m,:) = InputData(start_row + m - 1, :)
-                end do
-                call MPI_SEND(SendBuf(1,1), chunk_size*columns, &
-                              MPI_DOUBLE_PRECISION, i, i, MPI_COMM_WORLD, ierr)
-            end block
-
-            start_row = start_row + chunk_size
-        end do
-
-        ! Receive results from each slave in order and write to file
-        do i = 1, numprocs-1
-            if (i <= row_remainder) then
-                chunk_size = row_number + 1
-            else
-                chunk_size = row_number
-            end if
-
-            allocate(RecvData(chunk_size, noutput_columns))
-
-            call MPI_RECV(RecvData(1,1), chunk_size*noutput_columns, &
-                          MPI_DOUBLE_PRECISION, i, i, MPI_COMM_WORLD, status, ierr)
-
-            do j = 1, chunk_size
-                write(unit_output, &
-                      "(f6.3,5X,E15.6E4,5X,f5.2,5X,E15.6E4,5X,E15.6E4,5X,E15.6E4)") &
-                      RecvData(j,1), RecvData(j,2), RecvData(j,3), &
-                      RecvData(j,4), RecvData(j,5), RecvData(j,6)
+        ! Send/receive main block of rows
+        do k = 1, row_number
+            do i = 1, numprocs-1
+                start_row = i + (k-1.0) * (numprocs-1d0)
+                end_row   = start_row
+                SendData => InputData(start_row:end_row, 1:columns)
+                call MPI_SEND(SendData, (end_row-start_row+1)*columns, &
+                              MPI_DOUBLE_PRECISION, i, 110+i, MPI_COMM_WORLD, ierr)
             end do
 
-            deallocate(RecvData)
+            do i = 1, numprocs-1
+                call MPI_RECV(RecvData, noutput_columns*noutput_rows, &
+                              MPI_DOUBLE_PRECISION, i, 110+i, MPI_COMM_WORLD, status, ierr)
+                do j = 1, noutput_rows
+                    write(unit_output, &
+                          "(f6.3,5X,E15.6E4,5X,f5.2,5X,E15.6E4,5X,E15.6E4,5X,E15.6E4)") &
+                          RecvData(j + noutput_rows*0), &
+                          RecvData(j + noutput_rows*1), &
+                          RecvData(j + noutput_rows*2), &
+                          RecvData(j + noutput_rows*3), &
+                          RecvData(j + noutput_rows*4), &
+                          RecvData(j + noutput_rows*5)
+                end do
+            end do
+        end do
+
+        ! Send/receive remainder rows
+        do i = 1, row_remainder
+            start_row = i + row_number * (numprocs-1d0)
+            end_row   = start_row
+            SendData => InputData(start_row:end_row, 1:columns)
+            call MPI_SEND(SendData, (end_row-start_row+1)*columns, &
+                          MPI_DOUBLE_PRECISION, i, 110+i, MPI_COMM_WORLD, ierr)
+        end do
+
+        do i = 1, row_remainder
+            call MPI_RECV(RecvData, noutput_columns*noutput_rows, &
+                          MPI_DOUBLE_PRECISION, i, 110+i, MPI_COMM_WORLD, status, ierr)
+            do j = 1, noutput_rows
+                write(unit_output, &
+                      "(f6.3,5X,E15.6E4,5X,f5.2,5X,E15.6E4,5X,E15.6E4,5X,E15.6E4)") &
+                      RecvData(j + noutput_rows*0), &
+                      RecvData(j + noutput_rows*1), &
+                      RecvData(j + noutput_rows*2), &
+                      RecvData(j + noutput_rows*3), &
+                      RecvData(j + noutput_rows*4), &
+                      RecvData(j + noutput_rows*5)
+            end do
         end do
 
         close(unit_output)
 
     ! -------------------------------------------------------------------------
-    ! SLAVES: receive chunk, compute all points, send results back
+    ! SLAVES: receive grid points, compute diffusion coefficients, send back
     ! -------------------------------------------------------------------------
     else
 
-        if (mype <= row_remainder) then
-            chunk_size = row_number + 1
-        else
-            chunk_size = row_number
-        end if
+        row_remainder = mod(rows, numprocs-1)
+        row_number    = (rows - row_remainder) / (numprocs - 1d0)
+        noutput_rows    = 1
+        noutput_columns = 6
 
-        allocate(LocalData(chunk_size, columns))
-        allocate(OutputData(chunk_size, noutput_columns))
+        ! Slaves with rank <= row_remainder get one extra point
+        if (mype <= row_remainder) row_number = row_number + 1
 
-        call MPI_RECV(LocalData(1,1), chunk_size*columns, &
-                      MPI_DOUBLE_PRECISION, master, mype, MPI_COMM_WORLD, status, ierr)
+        allocate(LocalData(1, columns))
+        allocate(OutputData(noutput_rows, noutput_columns))
 
-        ! Use explicit temporaries to avoid non-contiguous array slice issues
-        block
-            real*8 :: input_point(1, columns)
-            real*8 :: output_point(1, noutput_columns)
-            do k = 1, chunk_size
-                input_point(1,:) = LocalData(k,:)
-                call sum_n(input_point, 1, columns, &
-                           output_point, 1, noutput_columns)
-                OutputData(k,:) = output_point(1,:)
-            end do
-        end block
+        do k = 1, row_number
+            call MPI_RECV(LocalData, columns, MPI_DOUBLE_PRECISION, master, &
+                          110+mype, MPI_COMM_WORLD, status, ierr)
 
-        call MPI_SEND(OutputData(1,1), chunk_size*noutput_columns, &
-                      MPI_DOUBLE_PRECISION, master, mype, MPI_COMM_WORLD, ierr)
+            call sum_n(LocalData, 1, columns, OutputData, noutput_rows, noutput_columns)
 
-        deallocate(LocalData)
-        deallocate(OutputData)
+            call MPI_SEND(OutputData, noutput_rows*noutput_columns, &
+                          MPI_DOUBLE_PRECISION, master, 110+mype, MPI_COMM_WORLD, ierr)
+        end do
 
     end if
 
