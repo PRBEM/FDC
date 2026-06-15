@@ -71,7 +71,7 @@
 
 subroutine int_N_omega(alpha, E, L, lambda, Theta_function, theta_max_eff, &
                        nres, omega, omega_e, omega_pe, omega_i, omega_pi, &
-                       res_cone, N_of_omega)
+                       res_cone, N_of_omega, whamp_curve)
 use constants
 use dispersion
 implicit none
@@ -82,6 +82,7 @@ implicit none
     integer, intent(in) :: nres
     character, intent(in) :: res_cone
     real*8, intent(out) :: N_of_omega
+    type(WHAMPCurve), intent(in) :: whamp_curve
 
     ! --- Wave normal angle distribution parameters ---
     real*8 :: theta_min, theta_max

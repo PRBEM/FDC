@@ -85,7 +85,9 @@
 !     this is a consistency check inherited from the original implementation.
 ! ==============================================================================
 
-subroutine WeightFunction(alpha, E, L, lambda, Bw, Theta_function, nres, theta, WeightValue)
+subroutine WeightFunction(alpha, E, L, lambda, Bw, Theta_function, nres, theta, WeightValue, &
+                          whamp_curve)
+
 use constants
 use dispersion
 implicit none
@@ -93,6 +95,7 @@ implicit none
     real*8, intent(in)  :: alpha, E, L, lambda, Bw, Theta_function(7), theta
     integer, intent(in) :: nres
     real*8, intent(out) :: WeightValue(3)
+    type(WHAMPCurve), intent(in) :: whamp_curve
 
     ! --- Local diffusion coefficient accumulator ---
     real*8 :: D_tmp(3)
@@ -193,6 +196,11 @@ implicit none
     omega_i  = omega_e * me / mi
     omega_pe = sqrt(Ne_local * qe * qe / (C0 * me))
     omega_pi = omega_pe * sqrt(me / mi)
+
+    ! Initialise frequency parameters to zero before Freq_Spectral call.
+    ! Some FreqUnit models (e.g. 2018UBCHORUS, 2017CHORUS) only set
+    ! omega_lc and omega_uc, leaving omega_m and d_omega unchanged.
+    ! Explicit initialisation here ensures no garbage values are used.
     omega_m   = 0.0d0
     d_omega   = 0.0d0
     omega_lc  = 0.0d0
@@ -212,7 +220,7 @@ implicit none
     call Roots_finder(alpha, E, L, lambda, nres, theta, &
                       omega_e, omega_pe, omega_i, omega_pi, &
                       omega_lc, omega_uc, &
-                      roots)
+                      roots, whamp_curve)
 
     ! -------------------------------------------------------------------------
     ! Loop over resonant frequency roots
@@ -236,6 +244,7 @@ implicit none
             ! Consistency check: k_vec should be positive for nres > 0
             if ((nres > 0) .and. (k_vec < 0)) then
                 write(*,*) 'ERROR: negative k_vec for positive resonance harmonic'
+                write(*,*) 'N = ', nres, '  Root = ', omega
                 stop
             end if
 
@@ -319,7 +328,7 @@ implicit none
                 call int_N_omega(alpha, E, L, lambda, Theta_function, &
                                  theta_max_eff, nres, omega, &
                                  omega_e, omega_pe, omega_i, omega_pi, &
-                                 res_cone, N_of_omega)
+                                 res_cone, N_of_omega, whamp_curve)
 
                 G2 = (exp(-((X - X_m1)/X_w1)**2.0) &
                      + theta_q * exp(-((X - X_m2)/X_w2)**2.0)) / N_of_omega

@@ -23,7 +23,7 @@
 !     DENTONMULx    - Denton et al. [2004, 2006] multiplied by x (x=2,3,4,5)
 !     DENTONDIVx    - Denton et al. [2004, 2006] divided by x (x=2,3,4,5)
 !     CONSTANT      - Uniform density DenValue [cm^-3] everywhere
-!     NBBLBUB       - Kp-dependent fixed densities (Saturn NBB study)
+!     NBBLBUB       - Kp-dependent fixed densities (Binbin Ni study)
 !     XD_SATURN     - Saturn density model (Gu et al. 2012)
 !
 ! INPUTS:
@@ -43,14 +43,13 @@
 !     models after the base density is computed. DenLatIndex = 0 gives
 !     a latitude-independent density.
 !   - BUG FIXED: the original code had 'SHEELYDIV1O' (letter O) instead of
-!     'SHEELYDIV10' (number zero) in the case statement, which would have
-!     caused a silent fall-through to the DEFAULT error for that model.
+!     'SHEELYDIV10' (number zero) in the case statement.
 !
 ! REFERENCES:
-!   Sheeley et al. [2001] - J. Geophys. Res., 106, 25631-25641
-!   Carpenter & Anderson [1992] - J. Geophys. Res., 97, 1097-1108
-!   Denton et al. [2004] - J. Geophys. Res., 109, A09215
-!   Denton et al. [2006] - J. Geophys. Res., 111, A04213
+!   Sheeley et al. [2001]
+!   Carpenter & Anderson [1992]
+!   Denton et al. [2004]
+!   Denton et al. [2006]
 !
 ! ==============================================================================
 

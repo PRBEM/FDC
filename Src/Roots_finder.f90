@@ -68,8 +68,9 @@
 subroutine Roots_finder(alpha, E, L, lambda, nres, theta, &
                         omega_e, omega_pe, omega_i, omega_pi, &
                         omega_lc, omega_uc, &
-                        roots)
+                        roots, whamp_curve)
 use constants
+use dispersion
 implicit none
 
     real*8, intent(in)  :: alpha, E, L, lambda, theta
@@ -77,7 +78,9 @@ implicit none
     real*8, intent(in)  :: omega_e, omega_pe, omega_i, omega_pi
     real*8, intent(in)  :: omega_lc, omega_uc
     real*8, intent(out) :: roots(4)
+    type(WHAMPCurve), intent(in) :: whamp_curve
 
+    ! Cold plasma variables
     real*8 :: coeff(11)
     real*8 :: rtr(10), rti(10)
 
@@ -102,6 +105,13 @@ implicit none
     integer :: i, NN
     real*8  :: Temp2
 
+    ! HOT plasma variables
+    real*8  :: p, vpar
+    real*8  :: f_prev, f_curr, k_prev, k_curr, omega_prev, omega_curr
+    real*8  :: k_res, omega_res, frac
+    integer :: i_k, i_theta
+    logical :: root_found
+
     betta  = sqrt(E*(E + 2.0)) / (E + 1.0)
     gamma1 = E + 1.0
 
@@ -109,6 +119,65 @@ implicit none
 
     X = tan(theta)
 
+    ! -------------------------------------------------------------------------
+    ! HOT PLASMA CASE: find resonant k from WHAMP dispersion curve
+    ! -------------------------------------------------------------------------
+    if (DispersionType == 'HOT' .and. whamp_curve%n_k > 0) then
+        p    = me * c * sqrt((E + 1.0d0)**2.0d0 - 1.0d0)
+        vpar = p / gamma1 / me * cos(alpha_ne)
+ 
+        roots(1) = 0.0d0
+        roots(2) = 0.0d0
+        roots(3) = 0.0d0
+        roots(4) = 0.0d0
+        root_found = .false.
+ 
+        ! Find theta index closest to current theta
+        i_theta = 1
+        if (whamp_curve%n_theta > 1) then
+            do i_k = 1, whamp_curve%n_theta
+                if (abs(whamp_curve%theta(i_k) - theta) < &
+                    abs(whamp_curve%theta(i_theta) - theta)) then
+                    i_theta = i_k
+                end if
+            end do
+        end if
+ 
+        ! Scan k points for sign change in resonance condition
+        ! f(k) = omega(k) - k*cos(theta)*vpar - nres*sqe*omega_e/gamma1
+        k_prev     = 0.0d0
+        omega_prev = 0.0d0
+        f_prev     = 0.0d0
+ 
+        do i_k = 1, whamp_curve%n_k
+            if (.not. whamp_curve%valid(i_theta, i_k)) cycle
+ 
+            k_curr     = whamp_curve%k(i_k)
+            omega_curr = whamp_curve%omega(i_theta, i_k)
+            f_curr     = omega_curr - k_curr*cos(theta)*vpar &
+                         - real(nres)*real(sqe)*omega_e/gamma1
+ 
+            if (i_k > 1 .and. k_prev > 0.0d0 .and. f_prev * f_curr < 0.0d0) then
+                frac      = f_prev / (f_prev - f_curr)
+                k_res     = k_prev + frac * (k_curr - k_prev)
+                omega_res = omega_prev + frac * (omega_curr - omega_prev)
+ 
+                if (omega_res > omega_lc .and. omega_res < omega_uc) then
+                    roots(1)   = omega_res
+                    root_found = .true.
+                    exit
+                end if
+            end if
+ 
+            k_prev     = k_curr
+            omega_prev = omega_curr
+            f_prev     = f_curr
+        end do
+        return
+    end if
+
+    ! -------------------------------------------------------------------------
+    ! COLD PLASMA CASE: polynomial root finding
     ! -------------------------------------------------------------------------
     ! Plasma frequency combination coefficients
     ! Written to module variables (a1-a6) for subsequent use in WeightFunction.

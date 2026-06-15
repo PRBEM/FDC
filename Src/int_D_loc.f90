@@ -24,14 +24,6 @@
 !   transform the diffusion coefficients between the local and equatorial
 !   pitch angle frames.
 !
-!   The formulation follows:
-!     Albert, J. M. (2007), Simple approximations of quasi-linear diffusion
-!     coefficients, J. Geophys. Res., 112, A12202, doi:10.1029/2007JA012551
-!   which builds on the PADIE framework of:
-!     Glauert, S. A., and R. B. Horne (2005), Calculation of pitch angle and
-!     energy diffusion coefficients with the PADIE code, J. Geophys. Res.,
-!     110, A04206, doi:10.1029/2004JA010851
-!
 ! INPUTS:
 !   alpha   - Equatorial electron pitch angle [radians]
 !   E       - Electron kinetic energy normalised to rest-mass energy
@@ -60,17 +52,15 @@
 !     Theta_wave; they are not passed in from Integration_lambda. This means
 !     wave parameters are re-fetched at every lambda point.
 !
-! AUTHOR: [original author]
-! MODIFIED: [date] - Step 5 refactoring: removed redundant bare integer
-!                    declaration of nres and old commented-out geometric
-!                    factors block
 ! ==============================================================================
 
-subroutine int_D_loc(alpha, E, L, nres, lambda, D_integrad)
+subroutine int_D_loc(alpha, E, L, nres, lambda, D_integrad, whamp_curve)
+use dispersion
 implicit none
     real*8, intent(in)  :: alpha, E, L, lambda
     integer, intent(in) :: nres
     real*8, intent(out) :: D_integrad(3)
+    type(WHAMPCurve), intent(in) :: whamp_curve
 
     real*8  :: Bw
     real*8  :: Theta_function(7)
@@ -83,7 +73,7 @@ implicit none
     call Local_alpha(alpha, lambda, alpha_ne)
     call Bw_wave(L, lambda, Bw)
     call Theta_wave(L, lambda, Theta_function)
-    call D_local_n(alpha, E, L, nres, lambda, Bw, Theta_function, D_local)
+    call D_local_n(alpha, E, L, nres, lambda, Bw, Theta_function, D_local, whamp_curve)
 
     arc_element = cos(lambda) * sqrt(1.0 + 3.0*(sin(lambda))**2.0)
 
