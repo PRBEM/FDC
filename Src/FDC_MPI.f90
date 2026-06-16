@@ -341,16 +341,24 @@ implicit none
             stop
     end select
 
+    ! -------------------------------------------------------------------------
+    ! Dispersion type
+    ! -------------------------------------------------------------------------
+    read(unit_input,*) char_tmp
+    read(unit_input,*) DispersionType
+    DispersionType = trim(DispersionType)
+    select case(DispersionType)
+        case('COLD', 'HOT')
+            write(unit_log,"('Dispersion type:'4x,A10)") DispersionType
+        case default
+            write(unit_log,"('Invalid Dispersion Type:' 4x, A10)") DispersionType
+            stop
+    end select
     close(unit_input)
-
     write(unit_log,"('**********End initialization**********')")
     write(unit_log,"(/)")
     write(unit_log,"('**********Start calculation**********')")
     write(unit_log,"(/)")
-
-    ! Default to cold plasma dispersion relation.
-    ! Future: read from input file to enable hot plasma (WHAMP) option.
-    DispersionType = 'COLD'
 
     ! -------------------------------------------------------------------------
     ! Launch MPI parallel computation

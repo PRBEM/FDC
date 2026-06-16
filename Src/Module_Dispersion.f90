@@ -85,7 +85,7 @@ type :: DispersionProperties
     real*8 :: D             ! Stix D = (R-L)/2
  
     ! Hot plasma (WHAMP) outputs (to be implemented)
-    ! real*8 :: ex, ey, ez  ! normalised electric field components
+    complex(kind=8) :: EFL(3)   ! E field components from WHAMP
     ! real*8 :: bx, by, bz  ! normalised magnetic field components
  
 end type DispersionProperties
@@ -143,6 +143,7 @@ type :: WHAMPCurve
     real*8,  allocatable :: omega(:,:)    ! frequency [rad/s], (n_theta, n_k)
     real*8,  allocatable :: dw_dk(:,:)    ! group velocity [m/s], (n_theta, n_k)
     logical, allocatable :: valid(:,:)    ! convergence flag, (n_theta, n_k)
+    complex(kind=8), allocatable :: EFL(:,:,:) ! E field components (3, n_theta, n_k)
 end type WHAMPCurve
 
  
@@ -200,14 +201,18 @@ implicit none
                                             DP%dw_dk)
  
         case('HOT')
-            ! HOT plasma dispersion via WHAMP (not yet implemented).
-            ! When implemented, this case should populate DP%n_ref_ind2,
-            ! DP%dw_dk, and the WHAMP field component fields (ex, ey, ez,
-            ! bx, by, bz), then set DP%disp_type = 'HOT'.
-            write(*,*) 'ERROR: DispersionType = HOT is not yet implemented.'
-            write(*,*) 'Set DispersionType = COLD in the input file, or '
-            write(*,*) 'implement the WHAMP interface in Module_Dispersion.f90.'
-            stop
+            ! HOT plasma dispersion via WHAMP.
+            ! Stix parameters (R, L, P, S, D) are computed from cold plasma
+            ! as an approximation for the polarisation factor and resonance
+            ! cone check. n_ref_ind2 and dw_dk are supplied by the WHAMP
+            ! curve via WeightFunction and are not computed here.
+            DP%disp_type = 'HOT'
+            call cold_plasma_parameters(omega, omega_e, omega_pe, omega_i, omega_pi, &
+                                        DP%R, DP%L, DP%P, DP%S, DP%D)
+            ! n_ref_ind2 and dw_dk are set in WeightFunction from the WHAMP
+            ! curve interpolation, not here.
+            DP%n_ref_ind2 = 0.0d0
+            DP%dw_dk      = 0.0d0
  
         case default
             write(*,*) 'ERROR: Unknown DispersionType = ', trim(DispersionType)
@@ -266,9 +271,9 @@ implicit none
                                           DP%n_ref_ind2, DP%R, DP%L, DP%P, DP%S, &
                                           Fsq)
         case('HOT')
-            ! To be implemented using WHAMP field components (ex,ey,ez,bx,by,bz)
-            write(*,*) 'ERROR: HOT plasma polarisation factor not yet implemented.'
-            stop
+            call hot_plasma_polarisation(alpha_ne, nres, &
+                                         BesselF1, BesselF2, BesselF3, &
+                                         DP%EFL, Fsq)
  
         case default
             write(*,*) 'ERROR: Unknown disp_type in DispersionProperties: ', &
@@ -614,6 +619,7 @@ end subroutine cold_plasma_polarisation
 subroutine get_whamp_dispersion(fce_khz, fpe_khz, theta_min, theta_max, curve)
 use comin
 use comoutput
+use comcout
 implicit none
  
     real*8, intent(in)               :: fce_khz, fpe_khz
@@ -648,7 +654,9 @@ implicit none
     allocate(curve%omega(n_theta, n_k))
     allocate(curve%dw_dk(n_theta, n_k))
     allocate(curve%valid(n_theta, n_k))
- 
+    allocate(curve%EFL(3, n_theta, n_k))
+    
+    curve%EFL = (0.0d0, 0.0d0)
     curve%omega  = 0.0d0
     curve%dw_dk  = 0.0d0
     curve%valid  = .false.
@@ -764,7 +772,10 @@ implicit none
                 ! where v_th = c/CV (CV computed by WHAMP internally)
                 ! For now store the WHAMP normalised value and convert later
                 ! TODO: confirm exact normalisation of VGZOUT
-                curve%dw_dk(i_theta, i_k) = VGZOUT(1, i_k)
+                curve%dw_dk(i_theta, i_k) = VGZOUT(1, i_k) * c / CV
+                curve%EFL(1, i_theta, i_k) = EFL(1)
+                curve%EFL(2, i_theta, i_k) = EFL(2)
+                curve%EFL(3, i_theta, i_k) = EFL(3)
             end if
         end do
  
@@ -772,5 +783,39 @@ implicit none
  
 end subroutine get_whamp_dispersion
 
+subroutine hot_plasma_polarisation(alpha_ne, nres, &
+                                   BesselF1, BesselF2, BesselF3, &
+                                   EFL, Fsq)
+use constants
+implicit none
+    real*8, intent(in)          :: alpha_ne
+    integer, intent(in)         :: nres
+    real*8, intent(in)          :: BesselF1, BesselF2, BesselF3
+    complex(kind=8), intent(in) :: EFL(3)
+    real*8, intent(out)         :: Fsq
+
+    complex(kind=8) :: E_R, E_L, numerator
+    real*8          :: E_norm_sq
+
+    ! Right- and left-hand circular components
+    ! EFL(1)=Ex, EFL(2)=Ey, EFL(3)=Ez in field-aligned coords (B along z)
+    E_R = 0.5d0 * (EFL(1) + (0d0,1d0)*EFL(2))
+    E_L = 0.5d0 * (EFL(1) - (0d0,1d0)*EFL(2))
+
+    ! Resonance interaction: Jn-1*E_R + Jn+1*E_L + Jn*Ez*cos(alpha)/sin(alpha)
+    numerator = BesselF1 * E_R + BesselF3 * E_L &
+                + BesselF2 * EFL(3) * cos(alpha_ne) / sin(alpha_ne)
+
+    ! Normalise by wave energy |E|^2
+    E_norm_sq = real(EFL(1)*conjg(EFL(1)) + EFL(2)*conjg(EFL(2)) + &
+                     EFL(3)*conjg(EFL(3)))
+
+    if (E_norm_sq > 0.0d0) then
+        Fsq = real(numerator * conjg(numerator)) / E_norm_sq
+    else
+        Fsq = 0.0d0
+    end if
+
+end subroutine hot_plasma_polarisation
 
 end module dispersion

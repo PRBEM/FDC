@@ -259,6 +259,59 @@ implicit none
             n_ref_ind2 = DP%n_ref_ind2
             dw_dk      = DP%dw_dk
 
+            
+
+            ! -----------------------------------------------------------------
+            ! HOT case: overwrite n_ref_ind2 and dw_dk from WHAMP curve
+            ! -----------------------------------------------------------------
+            if (DispersionType == 'HOT' .and. whamp_curve%n_k > 0) then
+                block
+                    integer :: i_k, i_theta
+                    real*8  :: frac, k_lo, k_hi, n2_lo, n2_hi, dw_lo, dw_hi
+
+                    ! Find nearest theta index
+                    i_theta = 1
+                    if (whamp_curve%n_theta > 1) then
+                        do i_k = 1, whamp_curve%n_theta
+                            if (abs(whamp_curve%theta(i_k) - theta) < &
+                                abs(whamp_curve%theta(i_theta) - theta)) then
+                                i_theta = i_k
+                            end if
+                        end do
+                    end if
+
+                    ! Find bracketing k points by omega (not k_vec)
+                    do i_k = 2, whamp_curve%n_k
+                        if (.not. whamp_curve%valid(i_theta, i_k)) cycle
+                        if (.not. whamp_curve%valid(i_theta, i_k-1)) cycle
+                        if (whamp_curve%omega(i_theta, i_k-1) <= omega .and. &
+                            whamp_curve%omega(i_theta, i_k)   >= omega) then
+                            frac  = (omega - whamp_curve%omega(i_theta, i_k-1)) / &
+                                    (whamp_curve%omega(i_theta, i_k) - &
+                                     whamp_curve%omega(i_theta, i_k-1))
+                            n2_lo = (whamp_curve%k(i_k-1) * c / &
+                                     whamp_curve%omega(i_theta, i_k-1))**2.0d0
+                            n2_hi = (whamp_curve%k(i_k)   * c / &
+                                     whamp_curve%omega(i_theta, i_k))**2.0d0
+                            dw_lo = whamp_curve%dw_dk(i_theta, i_k-1)
+                            dw_hi = whamp_curve%dw_dk(i_theta, i_k)
+                            n_ref_ind2 = n2_lo + frac * (n2_hi - n2_lo)
+                            dw_dk      = dw_lo + frac * (dw_hi - dw_lo)
+                            DP%EFL(1) = whamp_curve%EFL(1,i_theta,i_k-1) + &
+                                frac*(whamp_curve%EFL(1,i_theta,i_k) - &
+                                whamp_curve%EFL(1,i_theta,i_k-1))
+                            DP%EFL(2) = whamp_curve%EFL(2,i_theta,i_k-1) + &
+                                frac*(whamp_curve%EFL(2,i_theta,i_k) - &
+                                    whamp_curve%EFL(2,i_theta,i_k-1))
+                            DP%EFL(3) = whamp_curve%EFL(3,i_theta,i_k-1) + &
+                                frac*(whamp_curve%EFL(3,i_theta,i_k) - &
+                                    whamp_curve%EFL(3,i_theta,i_k-1))
+                            exit
+                        end if
+                    end do
+                end block
+            end if
+
             ! -----------------------------------------------------------------
             ! Resonance cone check
             ! -----------------------------------------------------------------

@@ -133,25 +133,71 @@ implicit none
         theta = theta_min / 180.0 * PI + step * (real(i) - 1.0)
         X     = tan(theta)
 
-        ! Step 1: get n_ref_ind2 with k_vec=0
-        call Get_dispersion_properties(omega, 0.0d0, theta, &
-                                       omega_e, omega_pe, omega_i, omega_pi, &
-                                       DP)
-
-        ! Skip evanescent points (n^2 < 0)
-        if (DP%n_ref_ind2 < 0.0) then
-            Ntmp = 0.0
+        ! HOT case: interpolate n_ref_ind2 and dw_dk from WHAMP curve
+        if (DispersionType == 'HOT' .and. whamp_curve%n_k > 0) then
+            block
+                integer :: i_k, i_theta, i_s
+                real*8  :: frac
+                logical :: found
+                found = .false.
+                i_theta = 1
+                if (whamp_curve%n_theta > 1) then
+                    do i_s = 1, whamp_curve%n_theta
+                        if (abs(whamp_curve%theta(i_s) - theta) < &
+                            abs(whamp_curve%theta(i_theta) - theta)) then
+                            i_theta = i_s
+                        end if
+                    end do
+                end if
+                do i_k = 2, whamp_curve%n_k
+                    if (.not. whamp_curve%valid(i_theta, i_k)) cycle
+                    if (.not. whamp_curve%valid(i_theta, i_k-1)) cycle
+                    if (whamp_curve%omega(i_theta,i_k-1) <= omega .and. &
+                        whamp_curve%omega(i_theta,i_k)   >= omega) then
+                        frac = (omega - whamp_curve%omega(i_theta,i_k-1)) / &
+                               (whamp_curve%omega(i_theta,i_k) - &
+                                whamp_curve%omega(i_theta,i_k-1))
+                        DP%n_ref_ind2 = &
+                            (whamp_curve%k(i_k-1)*c/ &
+                             whamp_curve%omega(i_theta,i_k-1))**2.0d0 &
+                            + frac * &
+                            ((whamp_curve%k(i_k)*c/ &
+                              whamp_curve%omega(i_theta,i_k))**2.0d0 &
+                            -(whamp_curve%k(i_k-1)*c/ &
+                              whamp_curve%omega(i_theta,i_k-1))**2.0d0)
+                        DP%dw_dk = whamp_curve%dw_dk(i_theta,i_k-1) + &
+                            frac*(whamp_curve%dw_dk(i_theta,i_k) - &
+                                  whamp_curve%dw_dk(i_theta,i_k-1))
+                        found = .true.
+                        exit
+                    end if
+                end do
+                if (.not. found) then
+                    Ntmp = 0.0d0
+                else
+                    Ntmp = sin(theta) &
+                           * (exp(-((X - X_m1)/X_w1)**2.0) &
+                              + theta_q * exp(-((X - X_m2)/X_w2)**2.0)) &
+                           * DP%n_ref_ind2 * c / abs(DP%dw_dk)
+                end if
+            end block
         else
-            ! Step 2: compute actual k_vec, then get dw_dk with correct k_vec
-            k_vec = sqrt(DP%n_ref_ind2) * omega / c
-            call Get_dispersion_properties(omega, k_vec, theta, &
+            ! COLD case: two-step approach
+            call Get_dispersion_properties(omega, 0.0d0, theta, &
                                            omega_e, omega_pe, omega_i, omega_pi, &
                                            DP)
-
-            Ntmp = sin(theta) &
-                   * (exp(-((X - X_m1)/X_w1)**2.0) &
-                      + theta_q * exp(-((X - X_m2)/X_w2)**2.0)) &
-                   * DP%n_ref_ind2 * c / abs(DP%dw_dk)
+            if (DP%n_ref_ind2 < 0.0) then
+                Ntmp = 0.0
+            else
+                k_vec = sqrt(DP%n_ref_ind2) * omega / c
+                call Get_dispersion_properties(omega, k_vec, theta, &
+                                               omega_e, omega_pe, omega_i, omega_pi, &
+                                               DP)
+                Ntmp = sin(theta) &
+                       * (exp(-((X - X_m1)/X_w1)**2.0) &
+                          + theta_q * exp(-((X - X_m2)/X_w2)**2.0)) &
+                       * DP%n_ref_ind2 * c / abs(DP%dw_dk)
+            end if
         end if
 
         ! Trapezoidal weights
