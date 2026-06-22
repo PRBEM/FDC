@@ -97,6 +97,9 @@ implicit none
     type(DispersionProperties) :: DP
     real*8 :: k_vec
 
+    integer, save :: call_count = 0
+    call_count = call_count + 1
+
     ! -------------------------------------------------------------------------
     ! Integration resolution: finer near resonance cone
     ! -------------------------------------------------------------------------
@@ -134,40 +137,63 @@ implicit none
         X     = tan(theta)
 
         ! HOT case: interpolate n_ref_ind2 and dw_dk from WHAMP curve
-        if (DispersionType == 'HOT' .and. whamp_curve%n_k > 0) then
+       if (DispersionType == 'HOT' .and. whamp_curve%n_k > 0) then
             block
-                integer :: i_k, i_theta, i_s
-                real*8  :: frac
-                logical :: found
+                integer :: i_k, i_theta_lo, i_theta_hi, i_s
+                real*8  :: w_theta, omega_lo_t, omega_hi_t, frac
+                logical :: found, valid_lo, valid_hi
                 found = .false.
-                i_theta = 1
+
+                ! Find bracketing theta indices and interpolation weight
+                i_theta_lo = 1
+                i_theta_hi = 1
+                w_theta    = 0.0d0
                 if (whamp_curve%n_theta > 1) then
-                    do i_s = 1, whamp_curve%n_theta
-                        if (abs(whamp_curve%theta(i_s) - theta) < &
-                            abs(whamp_curve%theta(i_theta) - theta)) then
-                            i_theta = i_s
-                        end if
-                    end do
+                    if (theta <= whamp_curve%theta(1)) then
+                        i_theta_lo = 1
+                        i_theta_hi = 1
+                    else if (theta >= whamp_curve%theta(whamp_curve%n_theta)) then
+                        i_theta_lo = whamp_curve%n_theta
+                        i_theta_hi = whamp_curve%n_theta
+                    else
+                        do i_s = 2, whamp_curve%n_theta
+                            if (whamp_curve%theta(i_s-1) <= theta .and. &
+                                whamp_curve%theta(i_s)   >= theta) then
+                                i_theta_lo = i_s - 1
+                                i_theta_hi = i_s
+                                w_theta = (theta - whamp_curve%theta(i_theta_lo)) / &
+                                          (whamp_curve%theta(i_theta_hi) - &
+                                           whamp_curve%theta(i_theta_lo))
+                                exit
+                            end if
+                        end do
+                    end if
                 end if
+
                 do i_k = 2, whamp_curve%n_k
-                    if (.not. whamp_curve%valid(i_theta, i_k)) cycle
-                    if (.not. whamp_curve%valid(i_theta, i_k-1)) cycle
-                    if (whamp_curve%omega(i_theta,i_k-1) <= omega .and. &
-                        whamp_curve%omega(i_theta,i_k)   >= omega) then
-                        frac = (omega - whamp_curve%omega(i_theta,i_k-1)) / &
-                               (whamp_curve%omega(i_theta,i_k) - &
-                                whamp_curve%omega(i_theta,i_k-1))
-                        DP%n_ref_ind2 = &
-                            (whamp_curve%k(i_k-1)*c/ &
-                             whamp_curve%omega(i_theta,i_k-1))**2.0d0 &
-                            + frac * &
-                            ((whamp_curve%k(i_k)*c/ &
-                              whamp_curve%omega(i_theta,i_k))**2.0d0 &
-                            -(whamp_curve%k(i_k-1)*c/ &
-                              whamp_curve%omega(i_theta,i_k-1))**2.0d0)
-                        DP%dw_dk = whamp_curve%dw_dk(i_theta,i_k-1) + &
-                            frac*(whamp_curve%dw_dk(i_theta,i_k) - &
-                                  whamp_curve%dw_dk(i_theta,i_k-1))
+                    valid_lo = whamp_curve%valid(i_theta_lo, i_k) .and. &
+                               whamp_curve%valid(i_theta_lo, i_k-1)
+                    valid_hi = whamp_curve%valid(i_theta_hi, i_k) .and. &
+                               whamp_curve%valid(i_theta_hi, i_k-1)
+
+                    if (.not. valid_lo .or. .not. valid_hi) cycle
+
+                    omega_lo_t = (1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,i_k-1) + &
+                                 w_theta*whamp_curve%omega(i_theta_hi,i_k-1)
+                    omega_hi_t = (1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,i_k)   + &
+                                 w_theta*whamp_curve%omega(i_theta_hi,i_k)
+
+                    if (omega_lo_t <= omega .and. omega_hi_t >= omega) then
+                        frac = (omega - omega_lo_t) / (omega_hi_t - omega_lo_t)
+                        DP%n_ref_ind2 = (whamp_curve%k(i_k-1)*c/omega_lo_t)**2.0d0 + &
+                            frac*((whamp_curve%k(i_k)*c/omega_hi_t)**2.0d0 - &
+                                (whamp_curve%k(i_k-1)*c/omega_lo_t)**2.0d0)
+                        DP%dw_dk = ((1.0d0-w_theta)*whamp_curve%dw_dk(i_theta_lo,i_k-1) + &
+                                    w_theta*whamp_curve%dw_dk(i_theta_hi,i_k-1)) + &
+                            frac*( ((1.0d0-w_theta)*whamp_curve%dw_dk(i_theta_lo,i_k) + &
+                                    w_theta*whamp_curve%dw_dk(i_theta_hi,i_k)) - &
+                                ((1.0d0-w_theta)*whamp_curve%dw_dk(i_theta_lo,i_k-1) + &
+                                    w_theta*whamp_curve%dw_dk(i_theta_hi,i_k-1)) )
                         found = .true.
                         exit
                     end if
@@ -176,11 +202,12 @@ implicit none
                     Ntmp = 0.0d0
                 else
                     Ntmp = sin(theta) &
-                           * (exp(-((X - X_m1)/X_w1)**2.0) &
-                              + theta_q * exp(-((X - X_m2)/X_w2)**2.0)) &
-                           * DP%n_ref_ind2 * c / abs(DP%dw_dk)
+                        * (exp(-((X - X_m1)/X_w1)**2.0) &
+                            + theta_q * exp(-((X - X_m2)/X_w2)**2.0)) &
+                        * DP%n_ref_ind2 * c / abs(DP%dw_dk)
                 end if
             end block
+
         else
             ! COLD case: two-step approach
             call Get_dispersion_properties(omega, 0.0d0, theta, &

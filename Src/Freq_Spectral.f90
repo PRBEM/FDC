@@ -48,10 +48,7 @@
 !     2018LBCHORUS, 2018UBCHORUS, 2026LBCHORUS, 2026UBCHORUS), omega_m and
 !     d_omega are left undefined on output. For these models, the spectral
 !     shape is defined entirely within PowerSpectralDensity via its
-!     polynomial fit, and omega_m/d_omega are not needed.
-!   - The 2017CHORUS, 2018LBCHORUS, and 2018UBCHORUS cases have identical
-!     day/night MLT branches. The MLT branching is retained in case future
-!     updates introduce MLT dependence, but currently has no effect.
+!     polynomial fit, and omega_m/d_omega are not needed
 !   - All frequencies are in rad/s. The HZ case converts from Hz by
 !     multiplying by 2*PI. The 2016HISS case uses Hz * 2*PI directly.
 !
@@ -178,28 +175,28 @@ implicit none
             omega_uc = 0.50*omega_e_eq
 
         ! ----------------------------------------------------------------------
-        ! 2018LBCHORUS: lower-band chorus band edges only.
+        ! 2018LBCHORUS: lower-band chorus band edges
         ! ----------------------------------------------------------------------
         case('2018LBCHORUS')
             omega_lc = 0.05*omega_e_eq
             omega_uc = 0.50*omega_e_eq
 
         ! ----------------------------------------------------------------------
-        ! 2018UBCHORUS: upper-band chorus band edges only.
+        ! 2018UBCHORUS: upper-band chorus band edges
         ! ----------------------------------------------------------------------
         case('2018UBCHORUS')
             omega_lc = 0.50*omega_e_eq
             omega_uc = 1.00*omega_e_eq
 
         ! ----------------------------------------------------------------------
-        ! 2026LBCHORUS: lower-band chorus band edges only.
+        ! 2026LBCHORUS: lower-band chorus band edges
         ! ----------------------------------------------------------------------
         case('2026LBCHORUS')
             omega_lc = 0.05*omega_e_eq
             omega_uc = 0.50*omega_e_eq
 
         ! ----------------------------------------------------------------------
-        ! 2026UBCHORUS: upper-band chorus band edges only.
+        ! 2026UBCHORUS: upper-band chorus band edges
         ! ----------------------------------------------------------------------
         case('2026UBCHORUS')
             omega_lc = 0.50*omega_e_eq

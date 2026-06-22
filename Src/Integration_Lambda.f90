@@ -94,6 +94,8 @@ implicit none
   type(WHAMPCurve) :: curve
   logical :: curve_allocated
 
+  real*8 :: Theta_function(7)
+
   delta_lambda=(lambda_m-lambda_min)/real(nint_tmp)     ! step of magnetic latitude in rad
 
   BavRate(1) = 0.0
@@ -144,8 +146,12 @@ implicit none
             fce_khz = qe * B_local / me / (2.0d0 * PI * 1.0d3)
             fpe_khz = sqrt(Ne_local * qe * qe / (C0 * me)) / (2.0d0 * PI * 1.0d3)
 
-            ! Get WHAMP dispersion curve for this (fce, fpe)
-            call get_whamp_dispersion(fce_khz, fpe_khz, 0.0d0, 0.0d0, curve)
+            ! Get wave normal angle distribution parameters at this lambda
+            call Theta_wave(L, lambda, Theta_function)
+
+            call get_whamp_dispersion(fce_khz, fpe_khz, &
+                    Theta_function(5)*PI/180.0d0, &
+                    Theta_function(6)*PI/180.0d0, curve)
             curve_allocated = .true.
 
             call int_D_loc(alpha, E, L, nres, lambda, D_integrad, curve)

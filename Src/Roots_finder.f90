@@ -107,9 +107,11 @@ implicit none
 
     ! HOT plasma variables
     real*8  :: p, vpar
-    real*8  :: f_prev, f_curr, k_prev, k_curr, omega_prev, omega_curr
+    real*8  :: f_prev_pos, f_curr_pos, f_prev_neg, f_curr_neg
+    real*8  :: k_prev, k_curr, omega_prev, omega_curr
     real*8  :: k_res, omega_res, frac
-    integer :: i_k, i_theta
+    integer :: i_k, i_theta_lo, i_theta_hi
+    real*8  :: w_theta
     logical :: root_found
 
     betta  = sqrt(E*(E + 2.0)) / (E + 1.0)
@@ -132,46 +134,77 @@ implicit none
         roots(4) = 0.0d0
         root_found = .false.
  
-        ! Find theta index closest to current theta
-        i_theta = 1
+        ! Find bracketing theta indices and interpolation weight
+        i_theta_lo = 1
+        i_theta_hi = 1
+        w_theta    = 0.0d0
         if (whamp_curve%n_theta > 1) then
-            do i_k = 1, whamp_curve%n_theta
-                if (abs(whamp_curve%theta(i_k) - theta) < &
-                    abs(whamp_curve%theta(i_theta) - theta)) then
-                    i_theta = i_k
-                end if
-            end do
+            if (theta <= whamp_curve%theta(1)) then
+                i_theta_lo = 1
+                i_theta_hi = 1
+            else if (theta >= whamp_curve%theta(whamp_curve%n_theta)) then
+                i_theta_lo = whamp_curve%n_theta
+                i_theta_hi = whamp_curve%n_theta
+            else
+                do i_k = 2, whamp_curve%n_theta
+                    if (whamp_curve%theta(i_k-1) <= theta .and. &
+                        whamp_curve%theta(i_k)   >= theta) then
+                        i_theta_lo = i_k - 1
+                        i_theta_hi = i_k
+                        w_theta = (theta - whamp_curve%theta(i_theta_lo)) / &
+                                  (whamp_curve%theta(i_theta_hi) - &
+                                   whamp_curve%theta(i_theta_lo))
+                        exit
+                    end if
+                end do
+            end if
         end if
  
         ! Scan k points for sign change in resonance condition
         ! f(k) = omega(k) - k*cos(theta)*vpar - nres*sqe*omega_e/gamma1
-        k_prev     = 0.0d0
-        omega_prev = 0.0d0
-        f_prev     = 0.0d0
- 
+        ! Scan both +k and -k since the resonant wavevector sign depends on
+        ! the harmonic number and propagation geometry.
+        k_prev      = 0.0d0
+        omega_prev  = 0.0d0
+        f_prev_pos  = 0.0d0
+        f_prev_neg  = 0.0d0
+
         do i_k = 1, whamp_curve%n_k
-            if (.not. whamp_curve%valid(i_theta, i_k)) cycle
- 
+            if (.not. whamp_curve%valid(i_theta_lo, i_k)) cycle
+            if (.not. whamp_curve%valid(i_theta_hi, i_k)) cycle
             k_curr     = whamp_curve%k(i_k)
-            omega_curr = whamp_curve%omega(i_theta, i_k)
-            f_curr     = omega_curr - k_curr*cos(theta)*vpar &
+            omega_curr = (1.0d0 - w_theta) * whamp_curve%omega(i_theta_lo, i_k) + &
+                         w_theta * whamp_curve%omega(i_theta_hi, i_k)
+            f_curr_pos = omega_curr - k_curr*cos(theta)*vpar &
                          - real(nres)*real(sqe)*omega_e/gamma1
- 
-            if (i_k > 1 .and. k_prev > 0.0d0 .and. f_prev * f_curr < 0.0d0) then
-                frac      = f_prev / (f_prev - f_curr)
-                k_res     = k_prev + frac * (k_curr - k_prev)
-                omega_res = omega_prev + frac * (omega_curr - omega_prev)
- 
-                if (omega_res > omega_lc .and. omega_res < omega_uc) then
-                    roots(1)   = omega_res
-                    root_found = .true.
-                    exit
+            f_curr_neg = omega_curr + k_curr*cos(theta)*vpar &
+                         - real(nres)*real(sqe)*omega_e/gamma1
+
+            if (i_k > 1 .and. k_prev > 0.0d0) then
+                if (f_prev_pos * f_curr_pos < 0.0d0) then
+                    frac      = f_prev_pos / (f_prev_pos - f_curr_pos)
+                    omega_res = omega_prev + frac * (omega_curr - omega_prev)
+                    if (omega_res > omega_lc .and. omega_res < omega_uc) then
+                        roots(1)   = omega_res
+                        root_found = .true.
+                        exit
+                    end if
+                end if
+                if (f_prev_neg * f_curr_neg < 0.0d0) then
+                    frac      = f_prev_neg / (f_prev_neg - f_curr_neg)
+                    omega_res = omega_prev + frac * (omega_curr - omega_prev)
+                    if (omega_res > omega_lc .and. omega_res < omega_uc) then
+                        roots(1)   = omega_res
+                        root_found = .true.
+                        exit
+                    end if
                 end if
             end if
- 
+
             k_prev     = k_curr
             omega_prev = omega_curr
-            f_prev     = f_curr
+            f_prev_pos = f_curr_pos
+            f_prev_neg = f_curr_neg
         end do
         return
     end if

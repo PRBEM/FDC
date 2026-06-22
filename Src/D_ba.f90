@@ -135,8 +135,7 @@ implicit none
   end if
 
 
-  call Integration_lambda(lambda_m,lambda_min,nint_tmp,B_m,alpha,E,L,nres,BavRate)
-
+    call Integration_lambda(lambda_m,lambda_min,nint_tmp,B_m,alpha,E,L,nres,BavRate)
     BavRate(1)=BavRate(1)*A
     BavRate(2)=BavRate(2)*A
     BavRate(3)=BavRate(3)*A

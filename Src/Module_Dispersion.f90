@@ -633,14 +633,16 @@ implicit none
     real*8  :: ne_total, ne_cold, ne_hot
  
     ! Hot plasma parameters (fixed for now)
-    real*8, parameter :: hot_fraction  = 0.1d0    ! 10% hot electrons
+    real*8, parameter :: hot_fraction  = 0.0d0    ! cold-only validation test
     real*8, parameter :: T_cold_keV    = 0.001d0  ! cold species temperature
     real*8, parameter :: T_hot_par_keV = 15.0d0   ! hot electron T_par
     real*8, parameter :: T_hot_anis    = 2.0d0    ! T_perp/T_par for hot electrons
     real*8, parameter :: k_min_exp_val = -3.0d0   ! k grid: 10^-3 to 10^0
-    real*8, parameter :: k_max_exp_val =  0.0d0
+    real*8, parameter :: k_max_exp_val =  1.5d0
     integer, parameter :: n_k          = WHAMP_N_K
     integer, parameter :: n_theta      = WHAMP_N_THETA
+
+    real*8 :: CV_local, TR_local
  
     ! Allocate curve arrays
     curve%n_k     = n_k
@@ -670,13 +672,17 @@ implicit none
     ne_total = (2.0d0 * PI * fpe_khz * 1.0d3)**2 * C0 * me / (qe * qe)
     ne_cold  = (1.0d0 - hot_fraction) * ne_total
     ne_hot   = hot_fraction * ne_total
+
+    TR_local = T_cold_keV   ! since REN(1)=1, TR=TA(1)/1=TA(1)=T_cold_keV
+    CV_local = TR_local*(1022.0d0 + TR_local)/(511.0d0 + TR_local)**2.0d0
+    CV_local = 1.0d0 / sqrt(CV_local)
  
     ! Set up WHAMP k grid (log-spaced in WHAMP units)
     ! k_whamp stores log10(k) — actual k = 10^k_whamp
     k_step_exp = (k_max_exp_val - k_min_exp_val) / real(n_k - 1, 8)
     do i_k = 1, n_k
         curve%k_whamp(i_k) = k_min_exp_val + (i_k - 1) * k_step_exp
-        curve%k(i_k) = 10.0d0**curve%k_whamp(i_k) * omega_e_rads / c
+        curve%k(i_k) = 10.0d0**curve%k_whamp(i_k) * omega_e_rads * CV_local / c 
     end do
  
     ! Set up theta grid
@@ -693,28 +699,23 @@ implicit none
     ! Set up WHAMP comin module variables (plasma parameters)
     ! Species: cold electrons (90%), hot anisotropic electrons (10%), protons
     ! -------------------------------------------------------------------------
-    DN      = 0.0d0
-    TA      = 0.0d0
-    DD      = 1.0d0
-    AA      = 1.0d0
-    ASS     = 0.0d0
-    VD      = 0.0d0
- 
+
     DN(1)   = ne_cold           ! cold electrons [m^-3]
-    DN(2)   = ne_hot            ! hot electrons  [m^-3]
-    DN(3)   = ne_total          ! cold protons   [m^-3]
- 
+    DN(2)   = ne_total          ! cold protons   [m^-3] (charge neutralizing)
+    DN(3)   = ne_hot            ! hot electrons  [m^-3] (0 => cold-only test)
+
+
     TA(1)   = T_cold_keV        ! cold electrons T_par [keV]
-    TA(2)   = T_hot_par_keV     ! hot electrons  T_par [keV]
-    TA(3)   = T_cold_keV        ! cold protons   T_par [keV]
- 
+    TA(2)   = T_cold_keV        ! cold protons   T_par [keV]
+    TA(3)   = T_hot_par_keV     ! hot electrons  T_par [keV]
+
     AA(1,1) = 1.0d0             ! cold electrons T_perp/T_par = 1 (isotropic)
-    AA(2,1) = T_hot_anis        ! hot electrons  T_perp/T_par = 2
-    AA(3,1) = 1.0d0             ! cold protons   T_perp/T_par = 1 (isotropic)
- 
+    AA(2,1) = 1.0d0             ! cold protons   T_perp/T_par = 1 (isotropic)
+    AA(3,1) = T_hot_anis        ! hot electrons  T_perp/T_par anisotropy
+
     ASS(1)  = 0.0d0             ! electrons (mass=0 means electron mass)
-    ASS(2)  = 0.0d0             ! electrons
-    ASS(3)  = 1.0d0             ! protons (mass=1 proton mass)
+    ASS(2)  = 1.0d0             ! protons (mass=1 proton mass)
+    ASS(3)  = 0.0d0             ! electrons (hot)
  
     XC      = fce_khz           ! electron gyrofrequency [kHz]
     PZL     = 1.0d0             ! log scale for k grid
@@ -770,8 +771,6 @@ implicit none
                 ! Group velocity: VGZOUT is normalised to thermal velocity
                 ! Convert to m/s: dw_dk = VGZOUT * v_th * Omega_e/c
                 ! where v_th = c/CV (CV computed by WHAMP internally)
-                ! For now store the WHAMP normalised value and convert later
-                ! TODO: confirm exact normalisation of VGZOUT
                 curve%dw_dk(i_theta, i_k) = VGZOUT(1, i_k) * c / CV
                 curve%EFL(1, i_theta, i_k) = EFL(1)
                 curve%EFL(2, i_theta, i_k) = EFL(2)

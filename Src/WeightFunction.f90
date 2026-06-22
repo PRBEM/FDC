@@ -259,53 +259,83 @@ implicit none
             n_ref_ind2 = DP%n_ref_ind2
             dw_dk      = DP%dw_dk
 
-            
-
             ! -----------------------------------------------------------------
             ! HOT case: overwrite n_ref_ind2 and dw_dk from WHAMP curve
             ! -----------------------------------------------------------------
             if (DispersionType == 'HOT' .and. whamp_curve%n_k > 0) then
                 block
-                    integer :: i_k, i_theta
-                    real*8  :: frac, k_lo, k_hi, n2_lo, n2_hi, dw_lo, dw_hi
+                    integer :: i_k, i_theta_lo, i_theta_hi
+                    real*8  :: w_theta, omega_lo_t, omega_hi_t
+                    real*8  :: frac, n2_lo, n2_hi, dw_lo, dw_hi
+                    logical :: valid_lo, valid_hi
 
-                    ! Find nearest theta index
-                    i_theta = 1
+                    ! Find bracketing theta indices and interpolation weight
+                    i_theta_lo = 1
+                    i_theta_hi = 1
+                    w_theta    = 0.0d0
                     if (whamp_curve%n_theta > 1) then
-                        do i_k = 1, whamp_curve%n_theta
-                            if (abs(whamp_curve%theta(i_k) - theta) < &
-                                abs(whamp_curve%theta(i_theta) - theta)) then
-                                i_theta = i_k
-                            end if
-                        end do
+                        if (theta <= whamp_curve%theta(1)) then
+                            i_theta_lo = 1
+                            i_theta_hi = 1
+                        else if (theta >= whamp_curve%theta(whamp_curve%n_theta)) then
+                            i_theta_lo = whamp_curve%n_theta
+                            i_theta_hi = whamp_curve%n_theta
+                        else
+                            do i_k = 2, whamp_curve%n_theta
+                                if (whamp_curve%theta(i_k-1) <= theta .and. &
+                                    whamp_curve%theta(i_k)   >= theta) then
+                                    i_theta_lo = i_k - 1
+                                    i_theta_hi = i_k
+                                    w_theta = (theta - whamp_curve%theta(i_theta_lo)) / &
+                                              (whamp_curve%theta(i_theta_hi) - &
+                                               whamp_curve%theta(i_theta_lo))
+                                    exit
+                                end if
+                            end do
+                        end if
                     end if
 
-                    ! Find bracketing k points by omega (not k_vec)
+                    ! Find bracketing k points by interpolated omega
                     do i_k = 2, whamp_curve%n_k
-                        if (.not. whamp_curve%valid(i_theta, i_k)) cycle
-                        if (.not. whamp_curve%valid(i_theta, i_k-1)) cycle
-                        if (whamp_curve%omega(i_theta, i_k-1) <= omega .and. &
-                            whamp_curve%omega(i_theta, i_k)   >= omega) then
-                            frac  = (omega - whamp_curve%omega(i_theta, i_k-1)) / &
-                                    (whamp_curve%omega(i_theta, i_k) - &
-                                     whamp_curve%omega(i_theta, i_k-1))
-                            n2_lo = (whamp_curve%k(i_k-1) * c / &
-                                     whamp_curve%omega(i_theta, i_k-1))**2.0d0
-                            n2_hi = (whamp_curve%k(i_k)   * c / &
-                                     whamp_curve%omega(i_theta, i_k))**2.0d0
-                            dw_lo = whamp_curve%dw_dk(i_theta, i_k-1)
-                            dw_hi = whamp_curve%dw_dk(i_theta, i_k)
+                        valid_lo = whamp_curve%valid(i_theta_lo, i_k) .and. &
+                                whamp_curve%valid(i_theta_lo, i_k-1)
+                        valid_hi = whamp_curve%valid(i_theta_hi, i_k) .and. &
+                                whamp_curve%valid(i_theta_hi, i_k-1)
+                        if (.not. valid_lo .or. .not. valid_hi) cycle
+
+                        omega_lo_t = (1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,i_k-1) + &
+                                    w_theta*whamp_curve%omega(i_theta_hi,i_k-1)
+                        omega_hi_t = (1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,i_k)   + &
+                                    w_theta*whamp_curve%omega(i_theta_hi,i_k)
+
+                        if (omega_lo_t <= omega .and. omega_hi_t >= omega) then
+                            frac  = (omega - omega_lo_t) / (omega_hi_t - omega_lo_t)
+                            n2_lo = (whamp_curve%k(i_k-1) * c / omega_lo_t)**2.0d0
+                            n2_hi = (whamp_curve%k(i_k)   * c / omega_hi_t)**2.0d0
+                            dw_lo = (1.0d0-w_theta)*whamp_curve%dw_dk(i_theta_lo,i_k-1) + &
+                                    w_theta*whamp_curve%dw_dk(i_theta_hi,i_k-1)
+                            dw_hi = (1.0d0-w_theta)*whamp_curve%dw_dk(i_theta_lo,i_k)   + &
+                                    w_theta*whamp_curve%dw_dk(i_theta_hi,i_k)
                             n_ref_ind2 = n2_lo + frac * (n2_hi - n2_lo)
                             dw_dk      = dw_lo + frac * (dw_hi - dw_lo)
-                            DP%EFL(1) = whamp_curve%EFL(1,i_theta,i_k-1) + &
-                                frac*(whamp_curve%EFL(1,i_theta,i_k) - &
-                                whamp_curve%EFL(1,i_theta,i_k-1))
-                            DP%EFL(2) = whamp_curve%EFL(2,i_theta,i_k-1) + &
-                                frac*(whamp_curve%EFL(2,i_theta,i_k) - &
-                                    whamp_curve%EFL(2,i_theta,i_k-1))
-                            DP%EFL(3) = whamp_curve%EFL(3,i_theta,i_k-1) + &
-                                frac*(whamp_curve%EFL(3,i_theta,i_k) - &
-                                    whamp_curve%EFL(3,i_theta,i_k-1))
+                            DP%EFL(1) = (1.0d0-w_theta)*whamp_curve%EFL(1,i_theta_lo,i_k-1) + &
+                                        w_theta*whamp_curve%EFL(1,i_theta_hi,i_k-1) + &
+                                        frac*( ((1.0d0-w_theta)*whamp_curve%EFL(1,i_theta_lo,i_k) + &
+                                                w_theta*whamp_curve%EFL(1,i_theta_hi,i_k)) - &
+                                               ((1.0d0-w_theta)*whamp_curve%EFL(1,i_theta_lo,i_k-1) + &
+                                                w_theta*whamp_curve%EFL(1,i_theta_hi,i_k-1)) )
+                            DP%EFL(2) = (1.0d0-w_theta)*whamp_curve%EFL(2,i_theta_lo,i_k-1) + &
+                                        w_theta*whamp_curve%EFL(2,i_theta_hi,i_k-1) + &
+                                        frac*( ((1.0d0-w_theta)*whamp_curve%EFL(2,i_theta_lo,i_k) + &
+                                                w_theta*whamp_curve%EFL(2,i_theta_hi,i_k)) - &
+                                               ((1.0d0-w_theta)*whamp_curve%EFL(2,i_theta_lo,i_k-1) + &
+                                                w_theta*whamp_curve%EFL(2,i_theta_hi,i_k-1)) )
+                            DP%EFL(3) = (1.0d0-w_theta)*whamp_curve%EFL(3,i_theta_lo,i_k-1) + &
+                                        w_theta*whamp_curve%EFL(3,i_theta_hi,i_k-1) + &
+                                        frac*( ((1.0d0-w_theta)*whamp_curve%EFL(3,i_theta_lo,i_k) + &
+                                                w_theta*whamp_curve%EFL(3,i_theta_hi,i_k)) - &
+                                               ((1.0d0-w_theta)*whamp_curve%EFL(3,i_theta_lo,i_k-1) + &
+                                                w_theta*whamp_curve%EFL(3,i_theta_hi,i_k-1)) )
                             exit
                         end if
                     end do
@@ -379,12 +409,12 @@ implicit none
 
                 ! G2: normalised wave normal angle distribution
                 call int_N_omega(alpha, E, L, lambda, Theta_function, &
-                                 theta_max_eff, nres, omega, &
-                                 omega_e, omega_pe, omega_i, omega_pi, &
-                                 res_cone, N_of_omega, whamp_curve)
+                                theta_max_eff, nres, omega, &
+                                omega_e, omega_pe, omega_i, omega_pi, &
+                                res_cone, N_of_omega, whamp_curve)
 
                 G2 = (exp(-((X - X_m1)/X_w1)**2.0) &
-                     + theta_q * exp(-((X - X_m2)/X_w2)**2.0)) / N_of_omega
+                    + theta_q * exp(-((X - X_m2)/X_w2)**2.0)) / N_of_omega
 
                 ! G3: normalised wave amplitude factor
                 dB_local = Bw
