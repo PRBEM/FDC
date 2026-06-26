@@ -318,6 +318,9 @@ implicit none
                                     w_theta*whamp_curve%dw_dk(i_theta_hi,i_k)
                             n_ref_ind2 = n2_lo + frac * (n2_hi - n2_lo)
                             dw_dk      = dw_lo + frac * (dw_hi - dw_lo)
+                            if (k_vec < 0.0d0) then
+                                dw_dk = -dw_dk
+                            end if
                             DP%EFL(1) = (1.0d0-w_theta)*whamp_curve%EFL(1,i_theta_lo,i_k-1) + &
                                         w_theta*whamp_curve%EFL(1,i_theta_hi,i_k-1) + &
                                         frac*( ((1.0d0-w_theta)*whamp_curve%EFL(1,i_theta_lo,i_k) + &
@@ -409,7 +412,7 @@ implicit none
 
                 ! G2: normalised wave normal angle distribution
                 call int_N_omega(alpha, E, L, lambda, Theta_function, &
-                                theta_max_eff, nres, omega, &
+                                theta_max_eff, nres, omega, k_vec, &
                                 omega_e, omega_pe, omega_i, omega_pi, &
                                 res_cone, N_of_omega, whamp_curve)
 

@@ -68,7 +68,7 @@ implicit none
  
     real*8  :: hess(N2,N2), xr, xi
     real*8  :: VL(LDVL,N2), VR(LDVR,N2)
-    integer :: WORK(LWORK)
+    real*8 :: WORK(LWORK)
     integer :: info, j, k
  
     WORK(:) = 0
@@ -116,7 +116,7 @@ implicit none
  
     real*8  :: hess(N2,N2), xr, xi
     real*8  :: VL(LDVL,N2), VR(LDVR,N2)
-    integer :: WORK(LWORK)
+    real*8  :: WORK(LWORK)
     integer :: info, j, k
  
     WORK(:) = 0
@@ -164,7 +164,7 @@ implicit none
  
     real*8  :: hess(N2,N2), xr, xi
     real*8  :: VL(LDVL,N2), VR(LDVR,N2)
-    integer :: WORK(LWORK)
+    real*8 :: WORK(LWORK)
     integer :: info, j, k
  
     WORK(:) = 0

@@ -70,14 +70,14 @@
 ! ==============================================================================
 
 subroutine int_N_omega(alpha, E, L, lambda, Theta_function, theta_max_eff, &
-                       nres, omega, omega_e, omega_pe, omega_i, omega_pi, &
+                       nres, omega, k_vec_res, omega_e, omega_pe, omega_i, omega_pi, &
                        res_cone, N_of_omega, whamp_curve)
 use constants
 use dispersion
 implicit none
 
     real*8, intent(in)  :: alpha, E, L, lambda, Theta_function(7)
-    real*8, intent(in)  :: theta_max_eff, omega
+    real*8, intent(in)  :: theta_max_eff, omega, k_vec_res
     real*8, intent(in)  :: omega_e, omega_pe, omega_i, omega_pi
     integer, intent(in) :: nres
     character, intent(in) :: res_cone
@@ -194,6 +194,9 @@ implicit none
                                     w_theta*whamp_curve%dw_dk(i_theta_hi,i_k)) - &
                                 ((1.0d0-w_theta)*whamp_curve%dw_dk(i_theta_lo,i_k-1) + &
                                     w_theta*whamp_curve%dw_dk(i_theta_hi,i_k-1)) )
+                        if (k_vec_res < 0.0d0) then
+                            DP%dw_dk = -DP%dw_dk
+                        end if
                         found = .true.
                         exit
                     end if

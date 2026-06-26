@@ -107,8 +107,8 @@ real*8::omega_m_per,d_omega_per,o_lc,o_uc
 
 integer::nint,nint_zero_res,nint_X,nint_N,nint_N_res_cone
 
-integer, parameter :: WHAMP_N_K = 160  ! number of k points in WHAMP dispersion curve
-integer, parameter :: WHAMP_N_THETA = 40  ! theta points in WHAMP dispersion surface
+integer, parameter :: WHAMP_N_K = 40  ! number of k points in WHAMP dispersion curve
+integer, parameter :: WHAMP_N_THETA = 10  ! theta points in WHAMP dispersion surface
 
 real*8::lam_min,lam_max
 

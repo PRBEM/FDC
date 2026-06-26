@@ -721,63 +721,52 @@ implicit none
     PZL     = 1.0d0             ! log scale for k grid
     XOI     = 0.05d0 / fce_khz      ! starting frequency: 0.5 kHz in omega/Omega_e units
  
-    cycleZFirst = 1             ! vary k_par first (Z varies in outer loop)
- 
     ! -------------------------------------------------------------------------
     ! Call WHAMP for each theta point
     ! -------------------------------------------------------------------------
     do i_theta = 1, n_theta
         theta = curve%theta(i_theta)
- 
-        ! Set k grid: scan k_par = k*cos(theta), k_perp = k*sin(theta)
-        ! PM = [p_min, p_max, p_step] for k_perp (in log scale)
-        ! ZM = [z_min, z_max, z_step] for k_par (in log scale)
-        ! For log scale: actual k = 10^PM/ZM values
-        ! We want k_par = k*cos(theta) and k_perp = k*sin(theta)
-        ! In log scale: log10(k_par) = log10(k) + log10(cos(theta))
-        !               log10(k_perp) = log10(k) + log10(sin(theta))
- 
-        if (abs(theta) < 1.0d-6) then
-            ! Parallel propagation: use log scale for k_par
-            ! k_perp set to single point at 0 (PM(1)=PM(2) triggers kperpSize=1)
-            PZL   = 1.0d0
-            PM(1) = -10.0d0   ! effectively k_perp = 0 (10^-10 ~ 0)
-            PM(2) = -10.0d0
-            PM(3) = 1.0d0
-            ZM(1) = k_min_exp_val
-            ZM(2) = k_max_exp_val
-            ZM(3) = k_step_exp
-        else
-            ! Oblique propagation: use log scale
-            PZL   = 1.0d0
-            PM(1) = k_min_exp_val + log10(sin(theta))
-            PM(2) = k_max_exp_val + log10(sin(theta))
-            PM(3) = k_step_exp
-            ZM(1) = k_min_exp_val + log10(cos(theta))
-            ZM(2) = k_max_exp_val + log10(cos(theta))
-            ZM(3) = k_step_exp
-        end if
- 
-        call whamp_engine
- 
-        ! Extract results from comoutput arrays
+        XOI = 0.05d0 / fce_khz   ! reset starting guess at the start of each theta
+
         do i_k = 1, n_k
-            if (flagSolutionFoundOUT(1, i_k) == 1) then
-                curve%valid(i_theta, i_k) = .true.
-                ! fOUT stores X = omega/Omega_e (dimensionless)
-                ! Convert to rad/s: omega = X * Omega_e = X * 2*pi*fce_khz*1e3
-                curve%omega(i_theta, i_k) = &
-                    real(fOUT(1, i_k)) * omega_e_rads
-                ! Group velocity: VGZOUT is normalised to thermal velocity
-                ! Convert to m/s: dw_dk = VGZOUT * v_th * Omega_e/c
-                ! where v_th = c/CV (CV computed by WHAMP internally)
-                curve%dw_dk(i_theta, i_k) = VGZOUT(1, i_k) * c / CV
-                curve%EFL(1, i_theta, i_k) = EFL(1)
-                curve%EFL(2, i_theta, i_k) = EFL(2)
-                curve%EFL(3, i_theta, i_k) = EFL(3)
+            k_whamp = curve%k_whamp(i_k)
+
+            PZL = 1.0d0
+            if (abs(theta) < 1.0d-6) then
+                PM(1) = -10.0d0
+                PM(2) = -10.0d0
+                PM(3) = 1.0d0
+                ZM(1) = k_whamp
+                ZM(2) = k_whamp
+                ZM(3) = 1.0d0
+            else
+                PM(1) = k_whamp + log10(sin(theta))
+                PM(2) = PM(1)
+                PM(3) = 1.0d0
+                ZM(1) = k_whamp + log10(cos(theta))
+                ZM(2) = ZM(1)
+                ZM(3) = 1.0d0
             end if
+
+            call whamp_engine
+
+            if (flagSolutionFoundOUT(1, 1) == 1) then
+                block
+                    real*8 :: omega_candidate
+                    omega_candidate = real(fOUT(1, 1)) * omega_e_rads
+                    if (omega_candidate > 0.0d0 .and. omega_candidate < omega_e_rads) then
+                        curve%valid(i_theta, i_k) = .true.
+                        curve%omega(i_theta, i_k) = omega_candidate
+                        curve%dw_dk(i_theta, i_k) = VGZOUT(1, 1) * c / CV
+                        curve%EFL(1, i_theta, i_k) = EFL(1)
+                        curve%EFL(2, i_theta, i_k) = EFL(2)
+                        curve%EFL(3, i_theta, i_k) = EFL(3)
+                        XOI = real(fOUT(1, 1))
+                    end if
+                end block
+            end if
+
         end do
- 
     end do
  
 end subroutine get_whamp_dispersion
