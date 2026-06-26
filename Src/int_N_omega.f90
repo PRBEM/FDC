@@ -175,14 +175,11 @@ implicit none
                                whamp_curve%valid(i_theta_lo, i_k-1)
                     valid_hi = whamp_curve%valid(i_theta_hi, i_k) .and. &
                                whamp_curve%valid(i_theta_hi, i_k-1)
-
                     if (.not. valid_lo .or. .not. valid_hi) cycle
-
                     omega_lo_t = (1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,i_k-1) + &
                                  w_theta*whamp_curve%omega(i_theta_hi,i_k-1)
                     omega_hi_t = (1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,i_k)   + &
                                  w_theta*whamp_curve%omega(i_theta_hi,i_k)
-
                     if (omega_lo_t <= omega .and. omega_hi_t >= omega) then
                         frac = (omega - omega_lo_t) / (omega_hi_t - omega_lo_t)
                         DP%n_ref_ind2 = (whamp_curve%k(i_k-1)*c/omega_lo_t)**2.0d0 + &
@@ -201,6 +198,52 @@ implicit none
                         exit
                     end if
                 end do
+
+                ! Tolerance fallback: if omega is just barely outside the
+                ! curve's valid range at this theta (a precision edge case
+                ! near the whistler cutoff, not a real physics gap), use the
+                ! nearest valid endpoint's values rather than returning zero.
+                if (.not. found) then
+                    block
+                        integer :: i_first_valid, i_last_valid, i_s2
+                        real*8  :: omega_min_t, omega_max_t, tol
+                        logical :: vlo, vhi
+
+                        i_first_valid = 0
+                        i_last_valid  = 0
+                        do i_s2 = 1, whamp_curve%n_k
+                            vlo = whamp_curve%valid(i_theta_lo, i_s2)
+                            vhi = whamp_curve%valid(i_theta_hi, i_s2)
+                            if (vlo .and. vhi) then
+                                if (i_first_valid == 0) i_first_valid = i_s2
+                                i_last_valid = i_s2
+                            end if
+                        end do
+
+                        if (i_first_valid > 0) then
+                            omega_min_t = (1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,i_first_valid) + &
+                                          w_theta*whamp_curve%omega(i_theta_hi,i_first_valid)
+                            omega_max_t = (1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,i_last_valid) + &
+                                          w_theta*whamp_curve%omega(i_theta_hi,i_last_valid)
+                            tol = 0.01d0
+
+                            if (omega > omega_max_t .and. abs(omega-omega_max_t) < tol*omega_max_t) then
+                                DP%n_ref_ind2 = (whamp_curve%k(i_last_valid)*c/omega_max_t)**2.0d0
+                                DP%dw_dk = (1.0d0-w_theta)*whamp_curve%dw_dk(i_theta_lo,i_last_valid) + &
+                                           w_theta*whamp_curve%dw_dk(i_theta_hi,i_last_valid)
+                                if (k_vec_res < 0.0d0) DP%dw_dk = -DP%dw_dk
+                                found = .true.
+                            else if (omega < omega_min_t .and. abs(omega-omega_min_t) < tol*omega_min_t) then
+                                DP%n_ref_ind2 = (whamp_curve%k(i_first_valid)*c/omega_min_t)**2.0d0
+                                DP%dw_dk = (1.0d0-w_theta)*whamp_curve%dw_dk(i_theta_lo,i_first_valid) + &
+                                           w_theta*whamp_curve%dw_dk(i_theta_hi,i_first_valid)
+                                if (k_vec_res < 0.0d0) DP%dw_dk = -DP%dw_dk
+                                found = .true.
+                            end if
+                        end if
+                    end block
+                end if
+
                 if (.not. found) then
                     Ntmp = 0.0d0
                 else
