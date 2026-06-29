@@ -296,52 +296,114 @@ implicit none
                     end if
 
                     ! Find bracketing k points by interpolated omega
-                    do i_k = 2, whamp_curve%n_k
-                        valid_lo = whamp_curve%valid(i_theta_lo, i_k) .and. &
-                                whamp_curve%valid(i_theta_lo, i_k-1)
-                        valid_hi = whamp_curve%valid(i_theta_hi, i_k) .and. &
-                                whamp_curve%valid(i_theta_hi, i_k-1)
-                        if (.not. valid_lo .or. .not. valid_hi) cycle
+                    block
+                        logical :: found
+                        found = .false.
+                        do i_k = 2, whamp_curve%n_k
+                            valid_lo = whamp_curve%valid(i_theta_lo, i_k) .and. &
+                                    whamp_curve%valid(i_theta_lo, i_k-1)
+                            valid_hi = whamp_curve%valid(i_theta_hi, i_k) .and. &
+                                    whamp_curve%valid(i_theta_hi, i_k-1)
+                            if (.not. valid_lo .or. .not. valid_hi) cycle
 
-                        omega_lo_t = (1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,i_k-1) + &
-                                    w_theta*whamp_curve%omega(i_theta_hi,i_k-1)
-                        omega_hi_t = (1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,i_k)   + &
-                                    w_theta*whamp_curve%omega(i_theta_hi,i_k)
+                            omega_lo_t = (1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,i_k-1) + &
+                                        w_theta*whamp_curve%omega(i_theta_hi,i_k-1)
+                            omega_hi_t = (1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,i_k)   + &
+                                        w_theta*whamp_curve%omega(i_theta_hi,i_k)
 
-                        if (omega_lo_t <= omega .and. omega_hi_t >= omega) then
-                            frac  = (omega - omega_lo_t) / (omega_hi_t - omega_lo_t)
-                            n2_lo = (whamp_curve%k(i_k-1) * c / omega_lo_t)**2.0d0
-                            n2_hi = (whamp_curve%k(i_k)   * c / omega_hi_t)**2.0d0
-                            dw_lo = (1.0d0-w_theta)*whamp_curve%dw_dk(i_theta_lo,i_k-1) + &
-                                    w_theta*whamp_curve%dw_dk(i_theta_hi,i_k-1)
-                            dw_hi = (1.0d0-w_theta)*whamp_curve%dw_dk(i_theta_lo,i_k)   + &
-                                    w_theta*whamp_curve%dw_dk(i_theta_hi,i_k)
-                            n_ref_ind2 = n2_lo + frac * (n2_hi - n2_lo)
-                            dw_dk      = dw_lo + frac * (dw_hi - dw_lo)
-                            if (k_vec < 0.0d0) then
-                                dw_dk = -dw_dk
+                            if (omega_lo_t <= omega .and. omega_hi_t >= omega) then
+                                frac  = (omega - omega_lo_t) / (omega_hi_t - omega_lo_t)
+                                n2_lo = (whamp_curve%k(i_k-1) * c / omega_lo_t)**2.0d0
+                                n2_hi = (whamp_curve%k(i_k)   * c / omega_hi_t)**2.0d0
+                                dw_lo = (1.0d0-w_theta)*whamp_curve%dw_dk(i_theta_lo,i_k-1) + &
+                                        w_theta*whamp_curve%dw_dk(i_theta_hi,i_k-1)
+                                dw_hi = (1.0d0-w_theta)*whamp_curve%dw_dk(i_theta_lo,i_k)   + &
+                                        w_theta*whamp_curve%dw_dk(i_theta_hi,i_k)
+                                n_ref_ind2 = n2_lo + frac * (n2_hi - n2_lo)
+                                dw_dk      = dw_lo + frac * (dw_hi - dw_lo)
+                                if (k_vec < 0.0d0) then
+                                    dw_dk = -dw_dk
+                                end if
+                                DP%EFL(1) = (1.0d0-w_theta)*whamp_curve%EFL(1,i_theta_lo,i_k-1) + &
+                                            w_theta*whamp_curve%EFL(1,i_theta_hi,i_k-1) + &
+                                            frac*( ((1.0d0-w_theta)*whamp_curve%EFL(1,i_theta_lo,i_k) + &
+                                                    w_theta*whamp_curve%EFL(1,i_theta_hi,i_k)) - &
+                                                   ((1.0d0-w_theta)*whamp_curve%EFL(1,i_theta_lo,i_k-1) + &
+                                                    w_theta*whamp_curve%EFL(1,i_theta_hi,i_k-1)) )
+                                DP%EFL(2) = (1.0d0-w_theta)*whamp_curve%EFL(2,i_theta_lo,i_k-1) + &
+                                            w_theta*whamp_curve%EFL(2,i_theta_hi,i_k-1) + &
+                                            frac*( ((1.0d0-w_theta)*whamp_curve%EFL(2,i_theta_lo,i_k) + &
+                                                    w_theta*whamp_curve%EFL(2,i_theta_hi,i_k)) - &
+                                                   ((1.0d0-w_theta)*whamp_curve%EFL(2,i_theta_lo,i_k-1) + &
+                                                    w_theta*whamp_curve%EFL(2,i_theta_hi,i_k-1)) )
+                                DP%EFL(3) = (1.0d0-w_theta)*whamp_curve%EFL(3,i_theta_lo,i_k-1) + &
+                                            w_theta*whamp_curve%EFL(3,i_theta_hi,i_k-1) + &
+                                            frac*( ((1.0d0-w_theta)*whamp_curve%EFL(3,i_theta_lo,i_k) + &
+                                                    w_theta*whamp_curve%EFL(3,i_theta_hi,i_k)) - &
+                                                   ((1.0d0-w_theta)*whamp_curve%EFL(3,i_theta_lo,i_k-1) + &
+                                                    w_theta*whamp_curve%EFL(3,i_theta_hi,i_k-1)) )
+                                found = .true.
+                                exit
                             end if
-                            DP%EFL(1) = (1.0d0-w_theta)*whamp_curve%EFL(1,i_theta_lo,i_k-1) + &
-                                        w_theta*whamp_curve%EFL(1,i_theta_hi,i_k-1) + &
-                                        frac*( ((1.0d0-w_theta)*whamp_curve%EFL(1,i_theta_lo,i_k) + &
-                                                w_theta*whamp_curve%EFL(1,i_theta_hi,i_k)) - &
-                                               ((1.0d0-w_theta)*whamp_curve%EFL(1,i_theta_lo,i_k-1) + &
-                                                w_theta*whamp_curve%EFL(1,i_theta_hi,i_k-1)) )
-                            DP%EFL(2) = (1.0d0-w_theta)*whamp_curve%EFL(2,i_theta_lo,i_k-1) + &
-                                        w_theta*whamp_curve%EFL(2,i_theta_hi,i_k-1) + &
-                                        frac*( ((1.0d0-w_theta)*whamp_curve%EFL(2,i_theta_lo,i_k) + &
-                                                w_theta*whamp_curve%EFL(2,i_theta_hi,i_k)) - &
-                                               ((1.0d0-w_theta)*whamp_curve%EFL(2,i_theta_lo,i_k-1) + &
-                                                w_theta*whamp_curve%EFL(2,i_theta_hi,i_k-1)) )
-                            DP%EFL(3) = (1.0d0-w_theta)*whamp_curve%EFL(3,i_theta_lo,i_k-1) + &
-                                        w_theta*whamp_curve%EFL(3,i_theta_hi,i_k-1) + &
-                                        frac*( ((1.0d0-w_theta)*whamp_curve%EFL(3,i_theta_lo,i_k) + &
-                                                w_theta*whamp_curve%EFL(3,i_theta_hi,i_k)) - &
-                                               ((1.0d0-w_theta)*whamp_curve%EFL(3,i_theta_lo,i_k-1) + &
-                                                w_theta*whamp_curve%EFL(3,i_theta_hi,i_k-1)) )
-                            exit
+                        end do
+
+                        ! Tolerance fallback: if omega is just barely outside
+                        ! the curve's valid range at this theta (a precision
+                        ! edge case near the whistler cutoff), use the
+                        ! nearest valid endpoint's values instead of leaving
+                        ! n_ref_ind2/dw_dk at their stale HOT-placeholder
+                        ! zero values.
+                        if (.not. found) then
+                            block
+                                integer :: i_first_valid, i_last_valid, i_s2
+                                real*8  :: omega_min_t, omega_max_t, tol
+                                logical :: vlo2, vhi2
+
+                                i_first_valid = 0
+                                i_last_valid  = 0
+                                do i_s2 = 1, whamp_curve%n_k
+                                    vlo2 = whamp_curve%valid(i_theta_lo, i_s2)
+                                    vhi2 = whamp_curve%valid(i_theta_hi, i_s2)
+                                    if (vlo2 .and. vhi2) then
+                                        if (i_first_valid == 0) i_first_valid = i_s2
+                                        i_last_valid = i_s2
+                                    end if
+                                end do
+
+                                if (i_first_valid > 0) then
+                                    omega_min_t = (1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,i_first_valid) + &
+                                                  w_theta*whamp_curve%omega(i_theta_hi,i_first_valid)
+                                    omega_max_t = (1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,i_last_valid) + &
+                                                  w_theta*whamp_curve%omega(i_theta_hi,i_last_valid)
+                                    tol = 0.01d0
+
+                                    if (omega > omega_max_t .and. abs(omega-omega_max_t) < tol*omega_max_t) then
+                                        n_ref_ind2 = (whamp_curve%k(i_last_valid)*c/omega_max_t)**2.0d0
+                                        dw_dk = (1.0d0-w_theta)*whamp_curve%dw_dk(i_theta_lo,i_last_valid) + &
+                                                w_theta*whamp_curve%dw_dk(i_theta_hi,i_last_valid)
+                                        if (k_vec < 0.0d0) dw_dk = -dw_dk
+                                        DP%EFL(1) = (1.0d0-w_theta)*whamp_curve%EFL(1,i_theta_lo,i_last_valid) + &
+                                                    w_theta*whamp_curve%EFL(1,i_theta_hi,i_last_valid)
+                                        DP%EFL(2) = (1.0d0-w_theta)*whamp_curve%EFL(2,i_theta_lo,i_last_valid) + &
+                                                    w_theta*whamp_curve%EFL(2,i_theta_hi,i_last_valid)
+                                        DP%EFL(3) = (1.0d0-w_theta)*whamp_curve%EFL(3,i_theta_lo,i_last_valid) + &
+                                                    w_theta*whamp_curve%EFL(3,i_theta_hi,i_last_valid)
+                                    else if (omega < omega_min_t .and. abs(omega-omega_min_t) < tol*omega_min_t) then
+                                        n_ref_ind2 = (whamp_curve%k(i_first_valid)*c/omega_min_t)**2.0d0
+                                        dw_dk = (1.0d0-w_theta)*whamp_curve%dw_dk(i_theta_lo,i_first_valid) + &
+                                                w_theta*whamp_curve%dw_dk(i_theta_hi,i_first_valid)
+                                        if (k_vec < 0.0d0) dw_dk = -dw_dk
+                                        DP%EFL(1) = (1.0d0-w_theta)*whamp_curve%EFL(1,i_theta_lo,i_first_valid) + &
+                                                    w_theta*whamp_curve%EFL(1,i_theta_hi,i_first_valid)
+                                        DP%EFL(2) = (1.0d0-w_theta)*whamp_curve%EFL(2,i_theta_lo,i_first_valid) + &
+                                                    w_theta*whamp_curve%EFL(2,i_theta_hi,i_first_valid)
+                                        DP%EFL(3) = (1.0d0-w_theta)*whamp_curve%EFL(3,i_theta_lo,i_first_valid) + &
+                                                    w_theta*whamp_curve%EFL(3,i_theta_hi,i_first_valid)
+                                    end if
+                                end if
+                            end block
                         end if
-                    end do
+                    end block
                 end block
             end if
 

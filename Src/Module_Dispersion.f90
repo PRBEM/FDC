@@ -758,14 +758,13 @@ implicit none
                         curve%valid(i_theta, i_k) = .true.
                         curve%omega(i_theta, i_k) = omega_candidate
                         curve%dw_dk(i_theta, i_k) = VGZOUT(1, 1) * c / CV
-                        curve%EFL(1, i_theta, i_k) = EFL(1)
-                        curve%EFL(2, i_theta, i_k) = EFL(2)
-                        curve%EFL(3, i_theta, i_k) = EFL(3)
+                        curve%EFL(1, i_theta, i_k) = ExOUT(1, 1)
+                        curve%EFL(2, i_theta, i_k) = EyOUT(1, 1)
+                        curve%EFL(3, i_theta, i_k) = EzOUT(1, 1)
                         XOI = real(fOUT(1, 1))
                     end if
                 end block
             end if
-
         end do
     end do
  
