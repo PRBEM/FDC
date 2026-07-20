@@ -95,6 +95,8 @@ implicit none
     ! --- Dispersion ---
     type(DispersionProperties) :: DP
     real*8 :: k_vec
+    real*8 :: R_stix, L_stix, P_stix, S_stix, D_stix
+    real*8 :: dPdw_stix, dSdw_stix, dRdw_stix, dLdw_stix
 
     ! -------------------------------------------------------------------------
     ! Integration resolution: finer near resonance cone
@@ -123,6 +125,13 @@ implicit none
 
     step = (theta_max - theta_min) / 180.0 * PI / (real(nint_N_tmp) - 1.0)
 
+    ! Pre-compute Stix parameters and their omega-derivatives once, since
+    ! they depend only on omega and plasma frequencies (not theta or k_vec)
+    call cold_plasma_parameters(omega, omega_e, omega_pe, omega_i, omega_pi, &
+                                R_stix, L_stix, P_stix, S_stix, D_stix)
+    call cold_plasma_stix_derivatives(omega, omega_e, omega_pe, omega_i, omega_pi, &
+                                      dPdw_stix, dSdw_stix, dRdw_stix, dLdw_stix)
+
     ! -------------------------------------------------------------------------
     ! Trapezoidal integration over theta
     ! -------------------------------------------------------------------------
@@ -132,21 +141,38 @@ implicit none
         theta = theta_min / 180.0 * PI + step * (real(i) - 1.0)
         X     = tan(theta)
 
-        ! Step 1: get n_ref_ind2 with k_vec=0
-        call Get_dispersion_properties(omega, 0.0d0, theta, &
-                                       omega_e, omega_pe, omega_i, omega_pi, &
-                                       DP)
+        ! Compute n^2 using pre-computed Stix parameters
+        call cold_plasma_refractive_index(omega, 0.0d0, theta, &
+                                          P_stix, S_stix, R_stix, L_stix, &
+                                          DP%n_ref_ind2)
 
         ! Skip evanescent points (n^2 < 0)
         if (DP%n_ref_ind2 < 0.0) then
             Ntmp = 0.0
         else
-            ! Step 2: compute actual k_vec, then get dw_dk with correct k_vec
+            ! Compute k_vec then group velocity using pre-computed Stix
+            ! parameters and derivatives (avoids repeated cold_plasma_parameters
+            ! and cold_plasma_stix_derivatives calls per theta point)
             k_vec = sqrt(DP%n_ref_ind2) * omega / c
-            call Get_dispersion_properties(omega, k_vec, theta, &
-                                           omega_e, omega_pe, omega_i, omega_pi, &
-                                           DP)
-
+            block
+                real*8 :: dF1dw, dF2dw, dF3dw, dDdw, dDdk, X2
+                X2 = X * X
+                dDdk = (S_stix*X2 + P_stix) * (c**4.0d0) / (omega**4.0d0) &
+                       * 4.0d0*(k_vec**3.0d0) &
+                       - (R_stix*L_stix*X2 + (2.0d0+X2)*P_stix*S_stix) &
+                       * (c**2.0d0)/(omega**2.0d0) * 2.0d0*k_vec
+                dF1dw = ((k_vec*c)**4.0d0) / (omega**5.0d0) * &
+                        (omega*X2*dSdw_stix + omega*dPdw_stix &
+                         - 4.0d0*(S_stix*X2 + P_stix))
+                dF2dw = ((k_vec*c)**2.0d0) / (omega**3.0d0) * &
+                        (omega*(X2*(L_stix*dRdw_stix + R_stix*dLdw_stix) + &
+                                (2.0d0+X2)*(P_stix*dSdw_stix + S_stix*dPdw_stix)) &
+                         - 2.0d0*(R_stix*L_stix*X2 + (2.0d0+X2)*P_stix*S_stix))
+                dF3dw = (1.0d0 + X2) * (R_stix*L_stix*dPdw_stix &
+                        + P_stix*L_stix*dRdw_stix + P_stix*R_stix*dLdw_stix)
+                dDdw = dF1dw - dF2dw + dF3dw
+                DP%dw_dk = -(dDdk / dDdw)
+            end block
             Ntmp = sin(theta) &
                    * (exp(-((X - X_m1)/X_w1)**2.0) &
                       + theta_q * exp(-((X - X_m2)/X_w2)**2.0)) &

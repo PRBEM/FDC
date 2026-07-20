@@ -324,7 +324,68 @@ implicit none
                  / (2.0 * (S*(X**2.0) + P))
  
 end subroutine cold_plasma_refractive_index
- 
+
+! ==============================================================================
+! SUBROUTINE: cold_plasma_stix_derivatives
+! ==============================================================================
+! PURPOSE:
+!   Computes the analytic derivatives of the cold plasma Stix parameters
+!   R, L, P, S with respect to omega. These depend only on omega and the
+!   plasma frequencies, not on theta or k_vec, so they can be pre-computed
+!   once per (omega, L, lambda) combination and reused across theta/k loops.
+!
+! INPUTS:
+!   omega      - Wave frequency [rad/s]
+!   omega_e    - Electron gyrofrequency [rad/s]
+!   omega_pe   - Electron plasma frequency [rad/s]
+!   omega_i    - Ion gyrofrequency [rad/s]
+!   omega_pi   - Ion plasma frequency [rad/s]
+!
+! OUTPUTS:
+!   dPdw, dSdw, dRdw, dLdw - Derivatives of Stix P, S, R, L w.r.t. omega
+! ==============================================================================
+subroutine cold_plasma_stix_derivatives(omega, omega_e, omega_pe, omega_i, omega_pi, &
+                                        dPdw, dSdw, dRdw, dLdw)
+use constants
+implicit none
+    real*8, intent(in)  :: omega, omega_e, omega_pe, omega_i, omega_pi
+    real*8, intent(out) :: dPdw, dSdw, dRdw, dLdw
+
+    real*8 :: a1, a2, a3, a4, a5, a6
+
+    a1 = omega_i**2.0 + omega_e**2.0 + omega_pe**2.0 + omega_pi**2.0
+    a2 = (omega_i*omega_e)**2.0 + (omega_pe*omega_i)**2.0 + (omega_pi*omega_e)**2.0
+    a3 = omega_i + real(sqe)*omega_e
+    a4 = omega_i*real(sqe)*omega_e - omega_pe**2.0 - omega_pi**2.0
+    a5 = 0.0
+    a6 = omega_pi**2.0 + omega_pe**2.0
+
+    dPdw = 2.0 * a6 / (omega**3.0)
+
+    dSdw = (2.0*(a1 - omega_i**2.0 - omega_e**2.0)*(omega**5.0) + &
+             4.0*((omega_i**2.0)*(omega_e**2.0) - a2)*(omega**3.0) + &
+             2.0*(a2*(omega_i**2.0) + a2*(omega_e**2.0) - &
+                  a1*(omega_i**2.0)*(omega_e**2.0))*omega) / &
+            (((omega**2.0 - omega_i**2.0)**2.0) * &
+             ((omega**2.0 - omega_e**2.0)**2.0))
+
+    dRdw = (2.0*(omega_i*real(sqe)*omega_e - a4)*(omega**3.0) + &
+             (a3*omega_i*real(sqe)*omega_e - a4*omega_i - &
+              a4*real(sqe)*omega_e - 3.0*a5)*(omega**2.0) - &
+             2.0*a5*(omega_i + real(sqe)*omega_e)*omega - &
+             a5*omega_i*real(sqe)*omega_e) / &
+            ((omega**2.0) * ((omega + omega_i)**2.0) * &
+             ((omega + real(sqe)*omega_e)**2.0))
+
+    dLdw = (2.0*(omega_i*real(sqe)*omega_e - a4)*omega**3.0 - &
+             (a3*omega_i*real(sqe)*omega_e - a4*omega_i - &
+              a4*real(sqe)*omega_e - 3.0*a5)*(omega**2.0) - &
+             2.0*a5*(omega_i + real(sqe)*omega_e)*omega + &
+             a5*omega_i*real(sqe)*omega_e) / &
+            ((omega**2.0) * ((omega - omega_i)**2.0) * &
+             ((omega - real(sqe)*omega_e)**2.0))
+
+end subroutine cold_plasma_stix_derivatives
  
 ! ==============================================================================
 ! SUBROUTINE: cold_plasma_group_velocity
@@ -373,9 +434,6 @@ implicit none
  
     real*8 :: X
  
-    ! Local polynomial coefficients (previously a1-a6 in module variables)
-    real*8 :: a1, a2, a3, a4, a5, a6
- 
     ! Analytic Stix parameter derivatives w.r.t. omega
     real*8 :: dPdw, dSdw, dRdw, dLdw
  
@@ -384,40 +442,8 @@ implicit none
  
     X = tan(theta)
  
-    ! Plasma frequency combination coefficients
-    ! (definitions match those set in Roots_finder)
-    a1 = omega_i**2.0 + omega_e**2.0 + omega_pe**2.0 + omega_pi**2.0
-    a2 = (omega_i*omega_e)**2.0 + (omega_pe*omega_i)**2.0 + (omega_pi*omega_e)**2.0
-    a3 = omega_i + real(sqe)*omega_e
-    a4 = omega_i*real(sqe)*omega_e - omega_pe**2.0 - omega_pi**2.0
-    a5 = 0.0   ! analytically zero; see note in header regarding Albert (2007)
-    a6 = omega_pi**2.0 + omega_pe**2.0
- 
-    ! Analytic derivatives of Stix parameters w.r.t. omega
-    dPdw = 2.0 * a6 / (omega**3.0)
- 
-    dSdw = (2.0*(a1 - omega_i**2.0 - omega_e**2.0)*(omega**5.0) + &
-             4.0*((omega_i**2.0)*(omega_e**2.0) - a2)*(omega**3.0) + &
-             2.0*(a2*(omega_i**2.0) + a2*(omega_e**2.0) - &
-                  a1*(omega_i**2.0)*(omega_e**2.0))*omega) / &
-            (((omega**2.0 - omega_i**2.0)**2.0) * &
-             ((omega**2.0 - omega_e**2.0)**2.0))
- 
-    dRdw = (2.0*(omega_i*real(sqe)*omega_e - a4)*(omega**3.0) + &
-             (a3*omega_i*real(sqe)*omega_e - a4*omega_i - &
-              a4*real(sqe)*omega_e - 3.0*a5)*(omega**2.0) - &
-             2.0*a5*(omega_i + real(sqe)*omega_e)*omega - &
-             a5*omega_i*real(sqe)*omega_e) / &
-            ((omega**2.0) * ((omega + omega_i)**2.0) * &
-             ((omega + real(sqe)*omega_e)**2.0))
- 
-    dLdw = (2.0*(omega_i*real(sqe)*omega_e - a4)*omega**3.0 - &
-             (a3*omega_i*real(sqe)*omega_e - a4*omega_i - &
-              a4*real(sqe)*omega_e - 3.0*a5)*(omega**2.0) - &
-             2.0*a5*(omega_i + real(sqe)*omega_e)*omega + &
-             a5*omega_i*real(sqe)*omega_e) / &
-            ((omega**2.0) * ((omega - omega_i)**2.0) * &
-             ((omega - real(sqe)*omega_e)**2.0))
+    call cold_plasma_stix_derivatives(omega, omega_e, omega_pe, omega_i, omega_pi, &
+                                      dPdw, dSdw, dRdw, dLdw)
  
     ! dD/dk: derivative of dispersion function w.r.t. k
     dDdk = (S*(X**2.0) + P) * (c**4.0) / (omega**4.0) * 4.0*(k_vec**3.0) &
