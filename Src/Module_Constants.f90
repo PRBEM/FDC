@@ -118,6 +118,8 @@ real*8::Bw_Input
 character(len=30)::ThetaType
 real*8::Theta_Input(7)
 
+character(len=30)::DiffusionFormulation
+
 real::time_start,time_finish
 
 end module constants

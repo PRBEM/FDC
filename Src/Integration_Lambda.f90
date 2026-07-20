@@ -93,6 +93,9 @@ implicit none
   real*8 :: Ne_local, fce_khz, fpe_khz
   type(WHAMPCurve) :: curve
   logical :: curve_allocated
+  integer :: whamp_cache_hit_slot
+
+  real*8 :: t_prof_1, t_prof_2
 
   real*8 :: Theta_function(7)
 
@@ -103,6 +106,7 @@ implicit none
   BavRate(3) = 0.0
 
   if (delta_lambda > 0.0) then
+    call cpu_time(t_prof_1)
   
     do i=1, nint_tmp+1
 
@@ -129,35 +133,98 @@ implicit none
     curve%fce_khz = 0.0d0
     curve%fpe_khz = 0.0d0
 
-    do j = 1, nint_tmp+1
-        lambda = lambda_min + delta_lambda * real(j-1)              ! magnetic latitude
+    ! Check if the cache already has curves for this (L, alpha) pair
+    if (DispersionType == 'HOT') then
+        block
+            integer :: islot, ifound, ioldest, ioldest_time
 
-        ! HOT case: compute WHAMP dispersion curve at this lambda point
-        if (DispersionType == 'HOT') then
-            ! Clean up previous curve if allocated
-            if (curve_allocated) then
-                deallocate(curve%theta, curve%k, curve%k_whamp, &
-                            curve%omega, curve%dw_dk, curve%valid)
+            ! Search for a matching cache entry
+            ifound = 0
+            do islot = 1, WHAMP_CACHE_SIZE
+                if (whamp_cache(islot)%valid .and. &
+                    whamp_cache(islot)%L_cached == L .and. &
+                    whamp_cache(islot)%alpha_cached == alpha .and. &
+                    whamp_cache(islot)%n_lambda_cached == nint_tmp+1) then
+                    ifound = islot
+                    exit
+                end if
+            end do
+
+            if (ifound == 0) then
+                ! Cache miss: find a slot to fill (prefer an empty one,
+                ! otherwise evict the least-recently-used slot)
+                ioldest = 1
+                ioldest_time = whamp_cache_last_used(1)
+                do islot = 1, WHAMP_CACHE_SIZE
+                    if (.not. whamp_cache(islot)%valid) then
+                        ioldest = islot
+                        exit
+                    end if
+                    if (whamp_cache_last_used(islot) < ioldest_time) then
+                        ioldest = islot
+                        ioldest_time = whamp_cache_last_used(islot)
+                    end if
+                end do
+                ifound = ioldest
+
+                if (whamp_cache(ifound)%valid) then
+                    block
+                        integer :: jc
+                        do jc = 1, size(whamp_cache(ifound)%curves)
+                            deallocate(whamp_cache(ifound)%curves(jc)%theta, &
+                                       whamp_cache(ifound)%curves(jc)%k, &
+                                       whamp_cache(ifound)%curves(jc)%k_whamp, &
+                                       whamp_cache(ifound)%curves(jc)%omega, &
+                                       whamp_cache(ifound)%curves(jc)%dw_dk, &
+                                       whamp_cache(ifound)%curves(jc)%valid, &
+                                       whamp_cache(ifound)%curves(jc)%EFL)
+                        end do
+                    end block
+                    deallocate(whamp_cache(ifound)%curves)
+                    deallocate(whamp_cache(ifound)%lambda_cached)
+                end if
+
+                allocate(whamp_cache(ifound)%curves(nint_tmp+1))
+                allocate(whamp_cache(ifound)%lambda_cached(nint_tmp+1))
+
+                do j = 1, nint_tmp+1
+                    lambda = lambda_min + delta_lambda * real(j-1)
+                    whamp_cache(ifound)%lambda_cached(j) = lambda
+                    call B_field(L, lambda, B_local)
+                    call ElectronDensity(L, lambda, Ne_local)
+                    fce_khz = qe * B_local / me / (2.0d0 * PI * 1.0d3)
+                    fpe_khz = sqrt(Ne_local * qe * qe / (C0 * me)) / (2.0d0 * PI * 1.0d3)
+                    call Theta_wave(L, lambda, Theta_function)
+                    call get_whamp_dispersion(fce_khz, fpe_khz, &
+                                              Theta_function(5)*PI/180.0d0, &
+                                              Theta_function(6)*PI/180.0d0, &
+                                              whamp_cache(ifound)%curves(j))
+                end do
+
+                whamp_cache(ifound)%L_cached = L
+                whamp_cache(ifound)%alpha_cached = alpha
+                whamp_cache(ifound)%n_lambda_cached = nint_tmp+1
+                whamp_cache(ifound)%valid = .true.
             end if
 
-            ! Compute local plasma frequencies
-            call B_field(L, lambda, B_local)
-            call ElectronDensity(L, lambda, Ne_local)
-            fce_khz = qe * B_local / me / (2.0d0 * PI * 1.0d3)
-            fpe_khz = sqrt(Ne_local * qe * qe / (C0 * me)) / (2.0d0 * PI * 1.0d3)
+            whamp_cache_lru_counter = whamp_cache_lru_counter + 1
+            whamp_cache_last_used(ifound) = whamp_cache_lru_counter
+            whamp_cache_hit_slot = ifound   ! used below in the main loop
+        end block
+    end if
 
-            ! Get wave normal angle distribution parameters at this lambda
-            call Theta_wave(L, lambda, Theta_function)
+    ! -------------------------------------------------------------------------
+    ! Main lambda loop: reuse cached curves (HOT) or do nothing extra (COLD)
+    ! -------------------------------------------------------------------------
+    do j = 1, nint_tmp+1
+        lambda = lambda_min + delta_lambda * real(j-1)
 
-            call get_whamp_dispersion(fce_khz, fpe_khz, &
-                    Theta_function(5)*PI/180.0d0, &
-                    Theta_function(6)*PI/180.0d0, curve)
-            curve_allocated = .true.
-
+        if (DispersionType == 'HOT') then
+           curve = whamp_cache(whamp_cache_hit_slot)%curves(j)   ! deep copy
             call int_D_loc(alpha, E, L, nres, lambda, D_integrad, curve)
-
+            deallocate(curve%theta, curve%k, curve%k_whamp, &
+                       curve%omega, curve%dw_dk, curve%valid, curve%EFL)
         else
-            ! COLD case
             call int_D_loc(alpha, E, L, nres, lambda, D_integrad, curve)
         end if
 
@@ -191,6 +258,9 @@ implicit none
     BavRate(1) = BavRate(1) * delta_lambda
     BavRate(2) = BavRate(2) * delta_lambda
     BavRate(3) = BavRate(3) * delta_lambda / 2
+    call cpu_time(t_prof_2)
+    t_intlam_total = t_intlam_total + (t_prof_2 - t_prof_1)
+    n_intlam_calls = n_intlam_calls + 1
 end if
 
 end subroutine Integration_lambda

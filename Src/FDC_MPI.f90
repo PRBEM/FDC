@@ -39,6 +39,8 @@
 !   Line 38: lam_min, lam_max [degrees]
 !   Line 40: BwType, Bw_Input [pT]
 !   Line 42: ThetaType, Theta_Input(7)
+!   Line 44: DispersionType (COLD or HOT)
+!   Line 46: DiffusionFormulation (LYONS or CUNNINGHAM)
 !
 ! INPUT CONVENTIONS:
 !   - L is given as L*10 (e.g. 30 = L=3.0) and divided by 10 on reading
@@ -82,7 +84,7 @@ use constants
 implicit none
 
     character(len=100) :: Input_file, filename2, char_tmp
-    integer :: i
+    integer :: i, ios_diff_formulation
     real*8  :: mag
 
     call cpu_time(time_start)
@@ -354,6 +356,41 @@ implicit none
             write(unit_log,"('Invalid Dispersion Type:' 4x, A10)") DispersionType
             stop
     end select
+
+    ! -------------------------------------------------------------------------
+    ! Diffusion coefficient formulation: 'LYONS' (default) or 'CUNNINGHAM'
+    !
+    ! This is read last and is OPTIONAL for backward compatibility: input
+    ! files written before this option existed will hit end-of-file on the
+    ! comment-line read below, which we detect via IOSTAT and use to fall
+    ! back to 'LYONS' (the code's original, unchanged behaviour) without
+    ! aborting. Input files that DO include this option must supply both
+    ! the comment line and the keyword line, exactly like every other
+    ! parameter block above.
+    ! -------------------------------------------------------------------------
+    read(unit_input, *, iostat=ios_diff_formulation) char_tmp
+    if (ios_diff_formulation /= 0) then
+        DiffusionFormulation = 'LYONS'
+        write(unit_log,"('Diffusion formulation:'4x,A30," // &
+              "' (defaulted -- not present in input file)')") DiffusionFormulation
+    else
+        read(unit_input, *, iostat=ios_diff_formulation) DiffusionFormulation
+        if (ios_diff_formulation /= 0) then
+            DiffusionFormulation = 'LYONS'
+            write(unit_log,"('Diffusion formulation:'4x,A30," // &
+                  "' (defaulted -- malformed/missing value)')") DiffusionFormulation
+        else
+            DiffusionFormulation = to_upper(trim(DiffusionFormulation))
+            select case(DiffusionFormulation)
+                case('LYONS', 'CUNNINGHAM')
+                    write(unit_log,"('Diffusion formulation:'4x,A30)") DiffusionFormulation
+                case default
+                    write(unit_log,"('Invalid Diffusion Formulation:' 4x, A30)") DiffusionFormulation
+                    stop
+            end select
+        end if
+    end if
+
     close(unit_input)
     write(unit_log,"('**********End initialization**********')")
     write(unit_log,"(/)")

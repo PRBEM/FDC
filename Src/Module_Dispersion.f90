@@ -146,7 +146,31 @@ type :: WHAMPCurve
     complex(kind=8), allocatable :: EFL(:,:,:) ! E field components (3, n_theta, n_k)
 end type WHAMPCurve
 
- 
+integer, parameter :: WHAMP_CACHE_SIZE = 4   ! number of (L,alpha) curve-sets to hold
+
+type :: WHAMPCurveCache
+    logical :: valid = .false.
+    real*8  :: L_cached = -1.0d0
+    real*8  :: alpha_cached = -1.0d0
+    integer :: n_lambda_cached = 0
+    real*8, allocatable :: lambda_cached(:)
+    type(WHAMPCurve), allocatable :: curves(:)
+end type WHAMPCurveCache
+
+type(WHAMPCurveCache), save :: whamp_cache(WHAMP_CACHE_SIZE)
+integer, save :: whamp_cache_lru_counter = 0
+integer, save :: whamp_cache_last_used(WHAMP_CACHE_SIZE) = 0
+
+! Profiling accumulators
+real*8,  save :: t_roots_total  = 0.0d0
+real*8,  save :: t_weight_total = 0.0d0
+real*8,  save :: t_intn_total   = 0.0d0
+real*8,  save :: t_intlam_total = 0.0d0
+integer, save :: n_roots_calls  = 0
+integer, save :: n_weight_calls = 0
+integer, save :: n_intn_calls   = 0
+integer, save :: n_intlam_calls = 0
+
 contains
  
  
@@ -192,7 +216,7 @@ implicit none
             DP%disp_type = 'COLD'
             call cold_plasma_parameters(omega, omega_e, omega_pe, omega_i, omega_pi, &
                                         DP%R, DP%L, DP%P, DP%S, DP%D)
-            call cold_plasma_refractive_index(omega, k_vec, theta, &
+            call cold_plasma_refractive_index(omega, theta, &
                                               DP%P, DP%S, DP%R, DP%L, &
                                               DP%n_ref_ind2)
             call cold_plasma_group_velocity(omega, k_vec, theta, &
@@ -364,10 +388,10 @@ end subroutine cold_plasma_parameters
 !     be extended with a branch selector argument.
 !
 ! ==============================================================================
-subroutine cold_plasma_refractive_index(omega, k_vec, theta, P, S, R, L, &
+subroutine cold_plasma_refractive_index(omega, theta, P, S, R, L, &
                                         n_ref_ind2)
 implicit none
-    real*8, intent(in)  :: omega, k_vec, theta, P, S, R, L
+    real*8, intent(in)  :: omega, theta, P, S, R, L
     real*8, intent(out) :: n_ref_ind2
  
     real*8 :: X
@@ -384,76 +408,58 @@ implicit none
                  / (2.0 * (S*(X**2.0) + P))
  
 end subroutine cold_plasma_refractive_index
- 
- 
+
 ! ==============================================================================
-! SUBROUTINE: cold_plasma_group_velocity
+! SUBROUTINE: cold_plasma_stix_derivatives
 ! ==============================================================================
 !
 ! PURPOSE:
-!   Computes the cold plasma group velocity dw/dk along the wave vector
-!   direction, using analytic derivatives of the Stix parameters with
-!   respect to omega.
+!   Computes the analytic derivatives of the Stix cold plasma parameters
+!   R, L, P, S with respect to omega, at fixed plasma state. Factored out
+!   of cold_plasma_group_velocity so the same derivatives can be reused by
+!   cunningham_jacobian (Cunningham 2023, Eq. 4) without duplicating the
+!   formulas.
 !
-!   The group velocity is derived from the implicit dispersion relation D=0:
-!     dw/dk = -(dD/dk) / (dD/dw)
-!   where D is the cold plasma dispersion function expressed in terms of
-!   k and omega.
-!
-!   The analytic expressions for dP/dw, dS/dw, dR/dw, dL/dw follow
-!   Albert (2007), equations for the derivative of the dispersion tensor.
+!   These are the same dPdw, dSdw, dRdw, dLdw expressions previously
+!   computed inline in cold_plasma_group_velocity (Albert 2007 derivative
+!   formulas). Behaviour and numerical results are UNCHANGED from the
+!   original implementation; only the computation has been moved here.
 !
 ! INPUTS:
 !   omega       - Wave frequency [rad/s]
-!   k_vec       - Wave vector magnitude [rad/m]
-!   theta       - Wave normal angle [radians]
-!   R, L, P, S  - Stix parameters [-]
 !   omega_e     - Electron gyrofrequency [rad/s]
+!   omega_pe    - Electron plasma frequency [rad/s]
 !   omega_i     - Ion gyrofrequency [rad/s]
+!   omega_pi    - Ion plasma frequency [rad/s]
 !
 ! OUTPUTS:
-!   dw_dk       - Group velocity along wave vector [m/s]
+!   dPdw, dSdw, dRdw, dLdw - d/domega of the Stix P, S, R, L parameters [s/rad]
 !
 ! NOTES:
-!   - The coefficients a1-a6 are computed locally here from the plasma
-!     frequencies. They are no longer written to module variables (this
-!     replaces the side effect previously set in Roots_finder).
-!   - a5 is set to 0.0, consistent with the original implementation.
-!     See note in Roots_finder header regarding whether this is a valid
-!     simplification.
+!   - a1-a6 are the same local polynomial coefficients previously computed
+!     inline in cold_plasma_group_velocity. a5 is analytically zero; see
+!     the original note regarding Albert (2007).
 !
 ! ==============================================================================
-subroutine cold_plasma_group_velocity(omega, k_vec, theta, R, L, P, S, &
-                                      omega_e, omega_pe, omega_i, omega_pi, &
-                                      dw_dk)
+subroutine cold_plasma_stix_derivatives(omega, omega_e, omega_pe, omega_i, omega_pi, &
+                                        dPdw, dSdw, dRdw, dLdw)
+use constants
 implicit none
-    real*8, intent(in)  :: omega, k_vec, theta, R, L, P, S
-    real*8, intent(in)  :: omega_e, omega_pe, omega_i, omega_pi
-    real*8, intent(out) :: dw_dk
+    real*8, intent(in)  :: omega, omega_e, omega_pe, omega_i, omega_pi
+    real*8, intent(out) :: dPdw, dSdw, dRdw, dLdw
  
-    real*8 :: X
- 
-    ! Local polynomial coefficients (previously a1-a6 in module variables)
     real*8 :: a1, a2, a3, a4, a5, a6
  
-    ! Analytic Stix parameter derivatives w.r.t. omega
-    real*8 :: dPdw, dSdw, dRdw, dLdw
- 
-    ! Dispersion function derivatives
-    real*8 :: dF1dw, dF2dw, dF3dw, dDdw, dDdk
- 
-    X = tan(theta)
- 
     ! Plasma frequency combination coefficients
-    ! (definitions match those set in Roots_finder)
+    ! (definitions match those previously set in Roots_finder /
+    !  cold_plasma_group_velocity)
     a1 = omega_i**2.0 + omega_e**2.0 + omega_pe**2.0 + omega_pi**2.0
     a2 = (omega_i*omega_e)**2.0 + (omega_pe*omega_i)**2.0 + (omega_pi*omega_e)**2.0
     a3 = omega_i + real(sqe)*omega_e
     a4 = omega_i*real(sqe)*omega_e - omega_pe**2.0 - omega_pi**2.0
-    a5 = 0.0   ! analytically zero; see note in header regarding Albert (2007)
+    a5 = 0.0   ! analytically zero; see note in original cold_plasma_group_velocity
     a6 = omega_pi**2.0 + omega_pe**2.0
  
-    ! Analytic derivatives of Stix parameters w.r.t. omega
     dPdw = 2.0 * a6 / (omega**3.0)
  
     dSdw = (2.0*(a1 - omega_i**2.0 - omega_e**2.0)*(omega**5.0) + &
@@ -479,6 +485,71 @@ implicit none
             ((omega**2.0) * ((omega - omega_i)**2.0) * &
              ((omega - real(sqe)*omega_e)**2.0))
  
+end subroutine cold_plasma_stix_derivatives
+
+ 
+! ==============================================================================
+! SUBROUTINE: cold_plasma_group_velocity  [REFACTORED]
+! ==============================================================================
+!
+! PURPOSE:
+!   Computes the cold plasma group velocity dw/dk along the wave vector
+!   direction, using analytic derivatives of the Stix parameters with
+!   respect to omega.
+!
+!   The group velocity is derived from the implicit dispersion relation D=0:
+!     dw/dk = -(dD/dk) / (dD/dw)
+!   where D is the cold plasma dispersion function expressed in terms of
+!   k and omega.
+!
+!   The analytic expressions for dP/dw, dS/dw, dR/dw, dL/dw follow
+!   Albert (2007), equations for the derivative of the dispersion tensor,
+!   and are now obtained from the shared helper cold_plasma_stix_derivatives
+!   rather than being computed inline. This is a pure refactoring: the
+!   numerical result of this subroutine is UNCHANGED from the original
+!   implementation.
+!
+! INPUTS:
+!   omega       - Wave frequency [rad/s]
+!   k_vec       - Wave vector magnitude [rad/m]
+!   theta       - Wave normal angle [radians]
+!   R, L, P, S  - Stix parameters [-]
+!   omega_e     - Electron gyrofrequency [rad/s]
+!   omega_pe    - Electron plasma frequency [rad/s]
+!   omega_i     - Ion gyrofrequency [rad/s]
+!   omega_pi    - Ion plasma frequency [rad/s]
+!
+! OUTPUTS:
+!   dw_dk       - Group velocity along wave vector [m/s]
+!
+! NOTES:
+!   - a5 (inside cold_plasma_stix_derivatives) is set to 0.0, consistent
+!     with the original implementation. See note there regarding whether
+!     this is a valid simplification (inherited, unchanged).
+!
+! ==============================================================================
+subroutine cold_plasma_group_velocity(omega, k_vec, theta, R, L, P, S, &
+                                      omega_e, omega_pe, omega_i, omega_pi, &
+                                      dw_dk)
+use constants
+implicit none
+    real*8, intent(in)  :: omega, k_vec, theta, R, L, P, S
+    real*8, intent(in)  :: omega_e, omega_pe, omega_i, omega_pi
+    real*8, intent(out) :: dw_dk
+ 
+    real*8 :: X
+ 
+    ! Analytic Stix parameter derivatives w.r.t. omega (now from shared helper)
+    real*8 :: dPdw, dSdw, dRdw, dLdw
+ 
+    ! Dispersion function derivatives
+    real*8 :: dF1dw, dF2dw, dF3dw, dDdw, dDdk
+ 
+    X = tan(theta)
+ 
+    call cold_plasma_stix_derivatives(omega, omega_e, omega_pe, omega_i, omega_pi, &
+                                      dPdw, dSdw, dRdw, dLdw)
+ 
     ! dD/dk: derivative of dispersion function w.r.t. k
     dDdk = (S*(X**2.0) + P) * (c**4.0) / (omega**4.0) * 4.0*(k_vec**3.0) &
            - (R*L*(X**2.0) + (2.0 + X**2.0)*P*S) * (c**2.0)/(omega**2.0) &
@@ -486,12 +557,12 @@ implicit none
  
     ! dD/dw: derivative of dispersion function w.r.t. omega
     dF1dw = ((k_vec*c)**4.0) / (omega**5.0) * &
-            (omega*(X**2.0)*dSdw + omega*dPdw - 4.0*(S*(X**2.0) + P))
+            (omega*(X**2.0)*dSdw + omega*dPdw - 4.0*(S*(X**2.0) + P)) !((k_vec*c)**4.0) / (omega**5.0) * (omega*dA_-4*A_)
  
     dF2dw = ((k_vec*c)**2.0) / (omega**3.0) * &
             (omega*((X**2.0)*(L*dRdw + R*dLdw) + &
                     (2.0 + X**2.0)*(P*dSdw + S*dPdw)) - &
-             2.0*(R*L*(X**2.0) + (2.0 + X**2.0)*P*S))
+             2.0*(R*L*(X**2.0) + (2.0 + X**2.0)*P*S)) !((k_vec*c)**2.0) / (omega**3.0) *(omega*dB_-2*B_)
  
     dF3dw = (1.0 + X**2.0) * (R*L*dPdw + P*L*dRdw + P*R*dLdw)
  
@@ -633,11 +704,11 @@ implicit none
     real*8  :: ne_total, ne_cold, ne_hot
  
     ! Hot plasma parameters (fixed for now)
-    real*8, parameter :: hot_fraction  = 0.0d0    ! cold-only validation test
+    real*8, parameter :: hot_fraction  = 0.10d0    ! cold-only validation test
     real*8, parameter :: T_cold_keV    = 0.001d0  ! cold species temperature
     real*8, parameter :: T_hot_par_keV = 15.0d0   ! hot electron T_par
     real*8, parameter :: T_hot_anis    = 2.0d0    ! T_perp/T_par for hot electrons
-    real*8, parameter :: k_min_exp_val = -3.0d0   ! k grid: 10^-3 to 10^0
+    real*8, parameter :: k_min_exp_val = -3.0d0   ! k grid
     real*8, parameter :: k_max_exp_val =  1.5d0
     integer, parameter :: n_k          = WHAMP_N_K
     integer, parameter :: n_theta      = WHAMP_N_THETA
@@ -694,7 +765,6 @@ implicit none
                 (theta_max - theta_min) / real(n_theta - 1, 8) * (i_theta - 1)
         end if
     end do
- 
     ! -------------------------------------------------------------------------
     ! Set up WHAMP comin module variables (plasma parameters)
     ! Species: cold electrons (90%), hot anisotropic electrons (10%), protons
@@ -719,7 +789,7 @@ implicit none
  
     XC      = fce_khz           ! electron gyrofrequency [kHz]
     PZL     = 1.0d0             ! log scale for k grid
-    XOI     = 0.05d0 / fce_khz      ! starting frequency: 0.5 kHz in omega/Omega_e units
+    XOI = 0.05d0 / fce_khz      ! starting frequency: 0.5 kHz in omega/Omega_e units
  
     ! -------------------------------------------------------------------------
     ! Call WHAMP for each theta point
@@ -805,4 +875,99 @@ implicit none
 
 end subroutine hot_plasma_polarisation
 
+ 
+! ==============================================================================
+! SUBROUTINE: cunningham_jacobian
+! ==============================================================================
+!
+! PURPOSE:
+!   Computes the Jacobian used in the denominator of Cunningham (2023) Eq. 4b
+!
+!   Verbatim formula, following the PIRAN code (with mu = c*k/omega):
+!     A  = S*X^2 + P
+!     B  = R*L*X^2 + P*S*(2+X^2)
+!     C  = P*R*L*(1+X^2)
+!     dA = dS*X^2 + dP
+!     dB = (dR*L + R*dL)*X^2 + (dP*S + P*dS)*(2+X^2)
+!     dC = (dP*R*L + P*dR*L + P*R*dL)*(1+X^2)
+!     jacobian = (k^2/(1+X^2)) * [ (dA*mu^4 - dB*mu^2 + dC)
+!                                    / (2*(2*A*mu^4 - B*mu^2)) - 1/omega ]
+!
+!
+! IMPORTANT WARNING -- DO NOT WIRE THIS DIRECTLY INTO G2 = g(X)/N:
+!   Investigation during development of the 'CUNNINGHAM' DiffusionFormulation
+!   option established that this Jacobian is NOT a drop-in replacement for
+!   int_N_omega's N(omega) inside WeightFunction's existing
+!   G2 = g(X)/N(omega) formula. Two structural facts must both be respected
+!   together by any future correct implementation, established by reviewing
+!   the PIRAN reference implementation (RB-ENVIRONMENT/PIRAN):
+!     (1) Under Cunningham's method, g(X) must be pre-normalised by its own
+!         integral over the configured X range (integral_gx in PIRAN),
+!         BEFORE being divided by this Jacobian -- i.e. the quantity used
+!         is g(X)/integral(g(X)dX), NOT raw g(X) as int_N_omega's path uses.
+!     (2) This Jacobian substitutes for a DIFFERENT term, in a DIFFERENTLY
+!         -structured diffusion-coefficient formula (Cunningham/Glauert &
+!         Horne Eq. 11-13, via PIRAN's get_DnX_single_root), than the one
+!         WeightFunction currently implements (Albert 2007's Delta_n/G1/G3/
+!         G4 reformulation, which is specific to the LYONS path and is NOT
+!         interchangeable with Cunningham's formula at the level of a
+!         single substituted term).
+!   A correct 'CUNNINGHAM' implementation requires re-deriving
+!   WeightFunction's diffusion-coefficient kernel from Cunningham/Glauert &
+!   Horne Eq. 11-13 directly (see PIRAN's get_phi_squared, get_singular_term,
+!   get_DnX_single_root for the reference formulas), not substituting this
+!   Jacobian into the existing Albert-based pipeline. This subroutine is
+!   retained as a verified building block for that future work, but is NOT
+!   currently called from WeightFunction.f90.
+!
+! INPUTS:
+!   omega       - Resonant wave frequency [rad/s]
+!   k_vec       - Wave vector magnitude [rad/m]
+!   theta       - Wave normal angle [radians]
+!   n_ref_ind2  - Refractive index squared (mu^2) at this (omega, theta) [-]
+!   R, L, P, S  - Stix parameters at this omega [-]
+!   omega_e, omega_pe, omega_i, omega_pi - Local plasma frequencies [rad/s]
+!
+! OUTPUTS:
+!   jacobian_out - PIRAN-equivalent Jacobian value [rad*s/m^2]
+!
+! ==============================================================================
+subroutine cunningham_jacobian(omega, k_vec, theta, n_ref_ind2, R, L, P, S, &
+                               omega_e, omega_pe, omega_i, omega_pi, &
+                               jacobian_out)
+use constants
+implicit none
+    real*8, intent(in)  :: omega, k_vec, theta, n_ref_ind2
+    real*8, intent(in)  :: R, L, P, S
+    real*8, intent(in)  :: omega_e, omega_pe, omega_i, omega_pi
+    real*8, intent(out) :: jacobian_out
+ 
+    real*8 :: X, mu, mu2
+    real*8 :: A_, B_
+    real*8 :: dPdw, dSdw, dRdw, dLdw
+    real*8 :: dA_, dB_, dC_
+ 
+    X   = tan(theta)
+    mu2 = n_ref_ind2
+    mu  = sqrt(mu2)
+ 
+    ! A, B (note: C is not needed by jacobian() itself, only dC)
+    A_ = S*(X**2.0) + P
+    B_ = R*L*(X**2.0) + P*S*(2.0 + X**2.0)
+ 
+    call cold_plasma_stix_derivatives(omega, omega_e, omega_pe, omega_i, omega_pi, &
+                                      dPdw, dSdw, dRdw, dLdw)
+ 
+    dA_ = dSdw*(X**2.0) + dPdw
+    dB_ = (dRdw*L + R*dLdw)*(X**2.0) + (dPdw*S + P*dSdw)*(2.0 + X**2.0)
+    dC_ = (dPdw*R*L + P*dRdw*L + P*R*dLdw)*(1.0 + X**2.0) !same as dF3dw in cold_plasma_stix_derivatives
+ 
+    jacobian_out = (k_vec**2.0 / (1.0 + X**2.0)) * ( &
+        (dA_*mu**4.0 - dB_*mu**2.0 + dC_) &
+        / (2.0*(2.0*A_*mu**4.0 - B_*mu**2.0)) &
+        - 1.0/omega )
+ 
+end subroutine cunningham_jacobian
+
+ 
 end module dispersion

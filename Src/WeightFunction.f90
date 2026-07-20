@@ -69,6 +69,10 @@
 !   Get_polarisation_factor  - Computes Fsq (module dispersion)
 !   PowerSpectralDensity     - Returns wave PSD at the resonant frequency
 !   int_N_omega              - Normalisation integral of wave normal angle distribution
+!                              (DiffusionFormulation = 'LYONS' only)
+!   cunningham_jacobian      - Local wave-normal-angle normalisation factor
+!                              (DiffusionFormulation = 'CUNNINGHAM' only;
+!                              module dispersion)
 !   Bessel_FirstKind         - Bessel function of the first kind J_n(x)
 !
 ! MODULE DEPENDENCIES:
@@ -78,11 +82,22 @@
 ! NOTES:
 !   - The resonance cone angle is checked; if it falls within the specified
 !     wave normal angle range, theta_max is reduced to 0.99 * theta_cone to
-!     avoid the singularity in the dispersion relation.
+!     avoid the singularity in the dispersion relation. This guard is
+!     primarily needed by the 'LYONS' formulation's int_N_omega integral,
+!     which (per Cunningham 2023) is not integrable if the resonance cone
+!     angle is included as an integration endpoint and g(X) > 0 there. The
+!     'CUNNINGHAM' formulation's local Jacobian factor does not have this
+!     non-integrability problem (no integral over theta is performed), but
+!     the guard is left in place for both formulations for now since it
+!     also affects the validity of n_ref_ind2 itself near the cone.
 !   - Roots that are zero or lie below the lower-hybrid frequency are silently
 !     discarded (WeightValue contributions set to zero).
 !   - The sign check on k_vec for nres > 0 will halt execution if violated;
 !     this is a consistency check inherited from the original implementation.
+!   - DiffusionFormulation ('LYONS' or 'CUNNINGHAM', from module constants)
+!     selects which normalisation is used for G2, as described above. The
+!     'LYONS' path reproduces the code's original behaviour exactly. 
+!     See Module_Dispersion.f90 for further documentation of the two formulations.
 ! ==============================================================================
 
 subroutine WeightFunction(alpha, E, L, lambda, Bw, Theta_function, nres, theta, WeightValue, &
@@ -149,6 +164,10 @@ implicit none
 
     ! --- Wave normal angle normalisation ---
     real*8 :: N_of_omega
+
+    real*8 :: t_prof_1, t_prof_2
+
+    call cpu_time(t_prof_1)
 
     ! -------------------------------------------------------------------------
     ! Initialise outputs
@@ -472,7 +491,6 @@ implicit none
                           PSD)
                 G1 = omega_e * PSD
 
-                ! G2: normalised wave normal angle distribution
                 call int_N_omega(alpha, E, L, lambda, Theta_function, &
                                 theta_max_eff, nres, omega, k_vec, &
                                 omega_e, omega_pe, omega_i, omega_pi, &
@@ -503,6 +521,10 @@ implicit none
         end if
 
     end do
+
+    call cpu_time(t_prof_2)
+    t_weight_total = t_weight_total + (t_prof_2 - t_prof_1)
+    n_weight_calls = n_weight_calls + 1
 
     return
 

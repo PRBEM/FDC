@@ -97,7 +97,14 @@ implicit none
     type(DispersionProperties) :: DP
     real*8 :: k_vec
 
+    real*8 :: R_stix, L_stix, P_stix, S_stix, D_stix
+    real*8 :: dPdw_stix, dSdw_stix, dRdw_stix, dLdw_stix
+
+    real*8 :: t_prof_1, t_prof_2
+
     integer, save :: call_count = 0
+
+    call cpu_time(t_prof_1)
     call_count = call_count + 1
 
     ! -------------------------------------------------------------------------
@@ -131,6 +138,14 @@ implicit none
     ! Trapezoidal integration over theta
     ! -------------------------------------------------------------------------
     N_of_omega = 0.0
+
+    if (DispersionType == 'COLD') then
+    call cold_plasma_parameters(omega, omega_e, omega_pe, omega_i, omega_pi, &
+                                R_stix, L_stix, P_stix, S_stix, D_stix)
+
+    call cold_plasma_stix_derivatives(omega, omega_e, omega_pe, omega_i, omega_pi, &
+                                          dPdw_stix, dSdw_stix, dRdw_stix, dLdw_stix)
+    end if
 
     do i = 1, nint_N_tmp
         theta = theta_min / 180.0 * PI + step * (real(i) - 1.0)
@@ -195,6 +210,10 @@ implicit none
                             DP%dw_dk = -DP%dw_dk
                         end if
                         found = .true.
+                        if (abs(DP%dw_dk) < 1.0d-6 * c) then
+                            Ntmp = 0.0d0
+                            found = .false.
+                        end if
                         exit
                     end if
                 end do
@@ -225,7 +244,7 @@ implicit none
                                           w_theta*whamp_curve%omega(i_theta_hi,i_first_valid)
                             omega_max_t = (1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,i_last_valid) + &
                                           w_theta*whamp_curve%omega(i_theta_hi,i_last_valid)
-                            tol = 0.01d0
+                            tol = 0.001d0
 
                             if (omega > omega_max_t .and. abs(omega-omega_max_t) < tol*omega_max_t) then
                                 DP%n_ref_ind2 = (whamp_curve%k(i_last_valid)*c/omega_max_t)**2.0d0
@@ -233,18 +252,26 @@ implicit none
                                            w_theta*whamp_curve%dw_dk(i_theta_hi,i_last_valid)
                                 if (k_vec_res < 0.0d0) DP%dw_dk = -DP%dw_dk
                                 found = .true.
+                                if (abs(DP%dw_dk) < 1.0d-6 * c) then
+                                    found = .false.
+                                end if
                             else if (omega < omega_min_t .and. abs(omega-omega_min_t) < tol*omega_min_t) then
                                 DP%n_ref_ind2 = (whamp_curve%k(i_first_valid)*c/omega_min_t)**2.0d0
                                 DP%dw_dk = (1.0d0-w_theta)*whamp_curve%dw_dk(i_theta_lo,i_first_valid) + &
                                            w_theta*whamp_curve%dw_dk(i_theta_hi,i_first_valid)
                                 if (k_vec_res < 0.0d0) DP%dw_dk = -DP%dw_dk
                                 found = .true.
+                                if (abs(DP%dw_dk) < 1.0d-6 * c) then
+                                    found = .false.
+                                end if
                             end if
                         end if
                     end block
                 end if
 
                 if (.not. found) then
+                    Ntmp = 0.0d0
+                else if (DP%n_ref_ind2 <= 0.0d0 .or. abs(DP%dw_dk) < 1.0d-6 * c) then
                     Ntmp = 0.0d0
                 else
                     Ntmp = sin(theta) &
@@ -255,17 +282,31 @@ implicit none
             end block
 
         else
-            ! COLD case: two-step approach
-            call Get_dispersion_properties(omega, 0.0d0, theta, &
-                                           omega_e, omega_pe, omega_i, omega_pi, &
-                                           DP)
+            ! COLD case
+            call cold_plasma_refractive_index(omega, theta, &
+                                              P_stix, S_stix, R_stix, L_stix, &
+                                              DP%n_ref_ind2)
             if (DP%n_ref_ind2 < 0.0) then
                 Ntmp = 0.0
             else
                 k_vec = sqrt(DP%n_ref_ind2) * omega / c
-                call Get_dispersion_properties(omega, k_vec, theta, &
-                                               omega_e, omega_pe, omega_i, omega_pi, &
-                                               DP)
+                block
+                    real*8 :: dF1dw, dF2dw, dF3dw, dDdw, dDdk, X2
+                    X2 = X*X   ! X = tan(theta), already computed above
+                    dDdk = (S_stix*X2 + P_stix) * (c**4.0d0) / (omega**4.0d0) * 4.0d0*(k_vec**3.0d0) &
+                           - (R_stix*L_stix*X2 + (2.0d0+X2)*P_stix*S_stix) * (c**2.0d0)/(omega**2.0d0) &
+                             * 2.0d0*k_vec
+                    dF1dw = ((k_vec*c)**4.0d0) / (omega**5.0d0) * &
+                            (omega*X2*dSdw_stix + omega*dPdw_stix - 4.0d0*(S_stix*X2 + P_stix))
+                    dF2dw = ((k_vec*c)**2.0d0) / (omega**3.0d0) * &
+                            (omega*(X2*(L_stix*dRdw_stix + R_stix*dLdw_stix) + &
+                                    (2.0d0+X2)*(P_stix*dSdw_stix + S_stix*dPdw_stix)) - &
+                             2.0d0*(R_stix*L_stix*X2 + (2.0d0+X2)*P_stix*S_stix))
+                    dF3dw = (1.0d0 + X2) * (R_stix*L_stix*dPdw_stix + P_stix*L_stix*dRdw_stix + &
+                                             P_stix*R_stix*dLdw_stix)
+                    dDdw = dF1dw - dF2dw + dF3dw
+                    DP%dw_dk = -(dDdk / dDdw)
+                end block
                 Ntmp = sin(theta) &
                        * (exp(-((X - X_m1)/X_w1)**2.0) &
                           + theta_q * exp(-((X - X_m2)/X_w2)**2.0)) &
@@ -282,6 +323,10 @@ implicit none
     end do
 
     N_of_omega = N_of_omega * step
+
+    call cpu_time(t_prof_2)
+    t_intn_total = t_intn_total + (t_prof_2 - t_prof_1)
+    n_intn_calls = n_intn_calls + 1
 
     return
 

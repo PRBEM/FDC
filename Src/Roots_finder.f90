@@ -114,6 +114,9 @@ implicit none
     real*8  :: w_theta
     logical :: root_found
 
+    real*8 :: t_prof_1, t_prof_2
+    call cpu_time(t_prof_1)
+
     betta  = sqrt(E*(E + 2.0)) / (E + 1.0)
     gamma1 = E + 1.0
 
@@ -312,6 +315,12 @@ implicit none
         end do
 
     end if
+
+    n_roots_calls = n_roots_calls + 1
+
+    call cpu_time(t_prof_2)
+    t_roots_total = t_roots_total + (t_prof_2 - t_prof_1)
+    n_roots_calls = n_roots_calls + 1
 
     return
 

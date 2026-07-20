@@ -57,6 +57,7 @@
 
 subroutine mpi_parallel
 use constants
+use dispersion
 implicit none
 
     include "mpif.h"
@@ -221,6 +222,14 @@ implicit none
         end do
 
     end if
+
+    write(*,*) '=== PROFILING SUMMARY (rank', mype, ') ==='
+    write(*,*) 'Integration_lambda: ', t_intlam_total, 's (', n_intlam_calls, ' calls)'
+    write(*,*) 'Roots_finder:       ', t_roots_total,  's (', n_roots_calls,  ' calls)'
+    write(*,*) 'WeightFunction:     ', t_weight_total, 's (', n_weight_calls, ' calls)'
+    write(*,*) 'int_N_omega:        ', t_intn_total,   's (', n_intn_calls,   ' calls)'
+    write(*,*) 'Total accounted:    ', &
+        t_intlam_total+t_roots_total+t_weight_total+t_intn_total, 's'
 
     call MPI_FINALIZE(ierr)
 
