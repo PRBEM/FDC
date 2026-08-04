@@ -85,6 +85,7 @@
 
 subroutine sum_n(InputData2, local_rows2, columns, OutputData, noutput_rows, noutput_columns)
 use constants
+use dispersion
 implicit none
 
     integer, intent(in) :: local_rows2, columns
@@ -99,11 +100,92 @@ implicit none
 
     integer :: i, resonmax, nres, I_nres
 
+    type(WHAMPCurve), allocatable :: whamp_curves_shared(:)
+    real*8, allocatable :: lambda_grid_shared(:)
+    integer :: n_lambda_shared
+    real*8 :: lambda_m_shared, lambda_min_shared, B_m_shared, delta_lambda_shared
+    real*8 :: fce_khz_s, fpe_khz_s, B_local_s, Ne_local_s
+    real*8 :: Theta_function_s(7)
+    integer :: jj
+
     do i = 1, local_rows2
 
         L        = InputData2(i,1)
         E        = InputData2(i,2) * 1.0e3 * qe / (me*c*c)
         alpha_eq = InputData2(i,3) * RAD
+
+        if (DispersionType == 'HOT') then
+            call Lambda_mirror_new(alpha_eq, lambda_m_shared)
+            call B_field(L, lambda_m_shared, B_m_shared)
+            lambda_min_shared = lam_min * RAD
+            if (lambda_m_shared/RAD >= lam_max) then
+                lambda_m_shared = lam_max * RAD
+            else if (lambda_m_shared/RAD <= lam_min) then
+                lambda_m_shared = lam_min * RAD
+            end if
+
+            n_lambda_shared = nint + 1
+            delta_lambda_shared = (lambda_m_shared - lambda_min_shared) / real(nint)
+
+            if (allocated(whamp_curves_shared)) then
+                do jj = 1, size(whamp_curves_shared)
+                    deallocate(whamp_curves_shared(jj)%theta, whamp_curves_shared(jj)%k, &
+                            whamp_curves_shared(jj)%k_whamp, whamp_curves_shared(jj)%omega, &
+                            whamp_curves_shared(jj)%dw_dk, whamp_curves_shared(jj)%valid, &
+                            whamp_curves_shared(jj)%EFL)
+                end do
+                deallocate(whamp_curves_shared)
+            end if
+            if (allocated(lambda_grid_shared)) deallocate(lambda_grid_shared)
+
+            allocate(lambda_grid_shared(n_lambda_shared))
+            allocate(whamp_curves_shared(n_lambda_shared))
+
+            do jj = 1, n_lambda_shared
+                lambda_grid_shared(jj) = lambda_min_shared + delta_lambda_shared * real(jj-1)
+                call B_field(L, lambda_grid_shared(jj), B_local_s)
+                call ElectronDensity(L, lambda_grid_shared(jj), Ne_local_s)
+                fce_khz_s = qe * B_local_s / me / (2.0d0 * PI * 1.0d3)
+                fpe_khz_s = sqrt(Ne_local_s * qe * qe / (C0 * me)) / (2.0d0 * PI * 1.0d3)
+                call Theta_wave(L, lambda_grid_shared(jj), Theta_function_s)
+                call get_whamp_dispersion(fce_khz_s, fpe_khz_s, &
+                                        Theta_function_s(5)*PI/180.0d0, &
+                                        Theta_function_s(6)*PI/180.0d0, &
+                                        whamp_curves_shared(jj))
+            end do
+        else
+            ! COLD case: allocate trivially so the array is always in a valid state
+            if (allocated(whamp_curves_shared)) then
+                do jj = 1, size(whamp_curves_shared)
+                    if (allocated(whamp_curves_shared(jj)%theta)) then
+                        deallocate(whamp_curves_shared(jj)%theta, whamp_curves_shared(jj)%k, &
+                                whamp_curves_shared(jj)%k_whamp, whamp_curves_shared(jj)%omega, &
+                                whamp_curves_shared(jj)%dw_dk, whamp_curves_shared(jj)%valid, &
+                                whamp_curves_shared(jj)%EFL)
+                    end if
+                end do
+                deallocate(whamp_curves_shared)
+            end if
+            if (allocated(lambda_grid_shared)) deallocate(lambda_grid_shared)
+
+            n_lambda_shared = 1
+            allocate(whamp_curves_shared(1))
+            allocate(lambda_grid_shared(1))
+            lambda_grid_shared(1) = 0.0d0
+            whamp_curves_shared(1)%n_k     = 0
+            whamp_curves_shared(1)%n_theta = 0
+        end if
+
+        if (E > 0.18d0 .and. E < 0.2d0 .and. abs(alpha_eq*180.0d0/PI - 56.67d0) < 1.0d0) then
+            block
+                integer :: i_theta_dbg
+                open(84, file='valid_pattern_a0005.txt', status='unknown', position='append')
+                do i_theta_dbg = 1, whamp_curves_shared(1)%n_theta
+                    write(84,'(80L2)') whamp_curves_shared(1)%valid(i_theta_dbg,:)
+                end do
+                close(84)
+            end block
+        end if
 
         BavDaa = 0.0
         BavDap = 0.0
@@ -135,7 +217,7 @@ implicit none
 
             do I_nres = nres_min, nres_max
                 nres = I_nres
-                call D_ba(alpha_eq, E, L, nres, BavRate)
+                call D_ba(alpha_eq, E, L, nres, BavRate, whamp_curves_shared, lambda_grid_shared, n_lambda_shared)
                 BavDaa = BavDaa + BavRate(1)
                 BavDap = BavDap + BavRate(2)
                 BavDpp = BavDpp + BavRate(3)

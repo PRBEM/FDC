@@ -277,6 +277,9 @@ implicit none
 
             n_ref_ind2 = DP%n_ref_ind2
             dw_dk      = DP%dw_dk
+            DP%EFL(1) = (0.0d0, 0.0d0)
+            DP%EFL(2) = (0.0d0, 0.0d0)
+            DP%EFL(3) = (0.0d0, 0.0d0)
 
             ! -----------------------------------------------------------------
             ! HOT case: overwrite n_ref_ind2 and dw_dk from WHAMP curve
@@ -330,6 +333,15 @@ implicit none
                             omega_hi_t = (1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,i_k)   + &
                                         w_theta*whamp_curve%omega(i_theta_hi,i_k)
 
+                            if (E > 0.18d0 .and. E < 0.2d0 .and. abs(alpha_ne*180.0d0/PI - 56.67d0) < 1.0d0 &
+                                .and. nres == 1 .and. omega_hi_t > 20000.0d0 .and. omega_lo_t < 25000.0d0) then
+                                open(86, file='bracket_a0005_near22k.txt', status='unknown', position='append')
+                                write(86,*) 'omega_target=', omega, ' i_k=', i_k, &
+                                            ' omega_lo_t=', omega_lo_t, ' omega_hi_t=', omega_hi_t, &
+                                            ' valid_lo=', valid_lo, ' valid_hi=', valid_hi
+                                close(86)
+                            end if
+
                             if (omega_lo_t <= omega .and. omega_hi_t >= omega) then
                                 frac  = (omega - omega_lo_t) / (omega_hi_t - omega_lo_t)
                                 n2_lo = (whamp_curve%k(i_k-1) * c / omega_lo_t)**2.0d0
@@ -342,6 +354,9 @@ implicit none
                                 dw_dk      = dw_lo + frac * (dw_hi - dw_lo)
                                 if (k_vec < 0.0d0) then
                                     dw_dk = -dw_dk
+                                end if
+                                if (abs(dw_dk) < 1.0d-6 * c) then
+                                    n_ref_ind2 = 0.0d0  
                                 end if
                                 DP%EFL(1) = (1.0d0-w_theta)*whamp_curve%EFL(1,i_theta_lo,i_k-1) + &
                                             w_theta*whamp_curve%EFL(1,i_theta_hi,i_k-1) + &
@@ -401,6 +416,7 @@ implicit none
                                         dw_dk = (1.0d0-w_theta)*whamp_curve%dw_dk(i_theta_lo,i_last_valid) + &
                                                 w_theta*whamp_curve%dw_dk(i_theta_hi,i_last_valid)
                                         if (k_vec < 0.0d0) dw_dk = -dw_dk
+                                        if (abs(dw_dk) < 1.0d-6 * c) found = .false.
                                         DP%EFL(1) = (1.0d0-w_theta)*whamp_curve%EFL(1,i_theta_lo,i_last_valid) + &
                                                     w_theta*whamp_curve%EFL(1,i_theta_hi,i_last_valid)
                                         DP%EFL(2) = (1.0d0-w_theta)*whamp_curve%EFL(2,i_theta_lo,i_last_valid) + &
@@ -412,6 +428,7 @@ implicit none
                                         dw_dk = (1.0d0-w_theta)*whamp_curve%dw_dk(i_theta_lo,i_first_valid) + &
                                                 w_theta*whamp_curve%dw_dk(i_theta_hi,i_first_valid)
                                         if (k_vec < 0.0d0) dw_dk = -dw_dk
+                                        if (abs(dw_dk) < 1.0d-6 * c) found = .false.
                                         DP%EFL(1) = (1.0d0-w_theta)*whamp_curve%EFL(1,i_theta_lo,i_first_valid) + &
                                                     w_theta*whamp_curve%EFL(1,i_theta_hi,i_first_valid)
                                         DP%EFL(2) = (1.0d0-w_theta)*whamp_curve%EFL(2,i_theta_lo,i_first_valid) + &
@@ -421,6 +438,70 @@ implicit none
                                     end if
                                 end if
                             end block
+                        end if
+                        if (.not. found) then
+                            block
+                                real*8 :: n2_targeted, dw_targeted
+                                complex(kind=8) :: EFL_targeted(3)
+                                logical :: valid_targeted
+                                call get_whamp_point(whamp_curve%fce_khz, whamp_curve%fpe_khz, theta, &
+                                                    abs(k_vec), omega, &
+                                                    n2_targeted, dw_targeted, EFL_targeted, valid_targeted)
+                                if (.not. found) then
+                                    block
+                                        real*8 :: n2_targeted, dw_targeted
+                                        complex(kind=8) :: EFL_targeted(3)
+                                        logical :: valid_targeted
+                                        call get_whamp_point(whamp_curve%fce_khz, whamp_curve%fpe_khz, theta, &
+                                                            abs(k_vec), omega, &
+                                                            n2_targeted, dw_targeted, EFL_targeted, valid_targeted)
+
+                                        if (E > 0.055d0 .and. E < 0.062d0 .and. abs(alpha_ne*180.0d0/PI - 10.0d0) < 1.0d0 &
+                                            .and. nres == 1) then
+                                            open(81, file='rescue_debug.txt', status='unknown', position='append')
+                                            write(81,*) 'rescue attempted: valid_targeted=', valid_targeted, &
+                                                        ' k_vec=', k_vec, ' omega=', omega, &
+                                                        ' fce=', whamp_curve%fce_khz, ' fpe=', whamp_curve%fpe_khz
+                                            close(81)
+                                        end if
+
+                                        if (valid_targeted) then
+                                            n_ref_ind2 = n2_targeted
+                                            dw_dk      = dw_targeted
+                                            if (k_vec < 0.0d0) dw_dk = -dw_dk
+                                            DP%EFL(1) = EFL_targeted(1)
+                                            DP%EFL(2) = EFL_targeted(2)
+                                            DP%EFL(3) = EFL_targeted(3)
+                                            found = .true.
+                                        end if
+                                    end block
+                                end if
+                                if (valid_targeted) then
+                                    n_ref_ind2 = n2_targeted
+                                    dw_dk      = dw_targeted
+                                    if (k_vec < 0.0d0) dw_dk = -dw_dk
+                                    DP%EFL(1) = EFL_targeted(1)
+                                    DP%EFL(2) = EFL_targeted(2)
+                                    DP%EFL(3) = EFL_targeted(3)
+                                    found = .true.
+                                end if
+                            end block
+                        end if
+                        if (E > 0.18d0 .and. E < 0.2d0 .and. abs(alpha_ne*180.0d0/PI - 56.67d0) < 1.0d0 &
+                            .and. nres == 1) then
+                            open(87, file='interp_a0005_debug.txt', status='unknown', position='append')
+                            write(87,*) 'omega=', omega, ' found=', found, &
+                                        ' n_ref_ind2=', n_ref_ind2, ' dw_dk=', dw_dk
+                            close(87)
+                        end if
+                        if (.not. found) then
+                            ! Both primary interpolation and targeted rescue failed for this
+                            ! resonance/theta/frequency sub-step. Skip this contribution rather
+                            ! than propagating NaN through the whole bounce-average.
+                            D_tmp(1) = 0.0d0
+                            D_tmp(2) = 0.0d0
+                            D_tmp(3) = 0.0d0
+                            ! (leave the rest of the loop to continue normally to the next sub-step)
                         end if
                     end block
                 end block
@@ -461,6 +542,15 @@ implicit none
                                          BesselF1, BesselF2, BesselF3, &
                                          DP, Fsq)
 
+            !if (E > 1.9d0 .and. E < 2.0d0 .and. abs(alpha_ne*180.0d0/PI - 10.0d0) < 1.0d0 &
+            !    .and. abs(lambda*180.0d0/PI) < 0.5d0 .and. nres == -1) then
+            !    open(91, file='fsq_nresmin1.txt', status='unknown', position='append')
+            !    write(91,*) 'DispType=', trim(DP%disp_type), ' nres=', nres, &
+            !                ' argJ=', argJ, ' BesselF1=', BesselF1, ' BesselF2=', BesselF2, &
+            !                ' BesselF3=', BesselF3, ' EFL=', DP%EFL, ' Fsq=', Fsq
+            !    close(91)
+            !end if
+
             ! -----------------------------------------------------------------
             ! Group velocity component along field line
             ! -----------------------------------------------------------------
@@ -469,7 +559,7 @@ implicit none
             ! -----------------------------------------------------------------
             ! Diffusion coefficient integrand
             ! -----------------------------------------------------------------
-            if (vpar == dw_dk_par &
+            if (abs(vpar - dw_dk_par) < 1.0d-3 * abs(vpar) &
                 .or. (theta * 180.0/PI) > theta_max_eff &
                 .or. theta_min > theta_max_eff) then
 
@@ -485,6 +575,15 @@ implicit none
                              - (sin(alpha_ne))**2.0)**2.0) &
                           / abs(1.0 - dw_dk_par/vpar)
 
+                !if (E > 1.9d0 .and. E < 2.0d0 .and. abs(alpha_ne*180.0d0/PI - 10.0d0) < 1.0d0 &
+                 !   .and. nres == -1) then
+                  !  open(90, file='deltan_nresmin1.txt', status='unknown', position='append')
+                   ! write(90,*) 'DispType=', trim(DP%disp_type), ' lambda(deg)=', lambda*180.0d0/PI, &
+                    !            ' dw_dk_par=', dw_dk_par, ' vpar=', vpar, &
+                     !           ' denom=', abs(1.0d0 - dw_dk_par/vpar), ' Delta_n=', Delta_n
+                    !close(90)
+                !end if
+
                 ! G1: frequency-weighted wave power spectral density
                 call PowerSpectralDensity(L, lambda, omega_e_eq, omega, &
                           omega_m, omega_lc, omega_uc, d_omega, &
@@ -495,6 +594,14 @@ implicit none
                                 theta_max_eff, nres, omega, k_vec, &
                                 omega_e, omega_pe, omega_i, omega_pi, &
                                 res_cone, N_of_omega, whamp_curve)
+
+                !if (E > 1.9d0 .and. E < 2.0d0) then   ! ~1 MeV normalized
+                 !   open(93, file='weightfn_debug.txt', status='unknown', position='append')
+                  !  write(93,*) 'alpha(deg)=', alpha*180.0d0/PI, ' lambda(deg)=', lambda*180.0d0/PI, &
+                   !             ' N_of_omega=', N_of_omega, ' G1=', G1, &
+                    !            ' theta_max_eff=', theta_max_eff, ' theta_min=', theta_min
+                 !   close(93)
+                !end if
 
                 G2 = (exp(-((X - X_m1)/X_w1)**2.0) &
                     + theta_q * exp(-((X - X_m2)/X_w2)**2.0)) / N_of_omega
@@ -511,6 +618,13 @@ implicit none
                 D_tmp(1) = G3 * Delta_n * G1 * G2
                 D_tmp(2) = D_tmp(1) * G4
                 D_tmp(3) = D_tmp(2) * G4
+
+            if (E > 0.055d0 .and. E < 0.062d0 .and. abs(alpha_ne*180.0d0/PI - 10.0d0) < 1.0d0 &
+                .and. abs(lambda*180.0d0/PI) < 0.5d0) then
+                open(90, file='dintegrad_a0005_30kev10deg.txt', status='unknown', position='append')
+                write(90,*) 'nres=', nres, ' D_tmp1=', D_tmp(1)
+                close(90)
+            end if
 
             end if
 

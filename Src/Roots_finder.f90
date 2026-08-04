@@ -115,6 +115,11 @@ implicit none
     logical :: root_found
 
     real*8 :: t_prof_1, t_prof_2
+
+    real*8 :: f_at_zero_pos, f_at_zero_neg
+    real*8 :: omega_first, k_first
+    real*8 :: f_first_pos, f_first_neg
+
     call cpu_time(t_prof_1)
 
     betta  = sqrt(E*(E + 2.0)) / (E + 1.0)
@@ -172,6 +177,49 @@ implicit none
         f_prev_pos  = 0.0d0
         f_prev_neg  = 0.0d0
 
+        ! DEBUG - verify whether the resonance crossing happens below k_min
+        !if (E > 1.9d0 .and. E < 2.0d0 .and. abs(alpha_ne*180.0d0/PI - 10.0d0) < 1.0d0 &
+        !    .and. nres == -1) then
+        !    open(89, file='rootscan_debug2.txt', status='unknown', position='append')
+        !    write(89,*) 'theta=', theta, ' vpar=', vpar, &
+        !                ' f_neg_at_kmin=', ( ((1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,1) + &
+        !                                    w_theta*whamp_curve%omega(i_theta_hi,1)) &
+        !                                    + whamp_curve%k(1)*cos(theta)*vpar &
+        !                                    - real(nres)*real(sqe)*omega_e/gamma1 ), &
+        !                ' f_neg_at_kmax=', ( ((1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,whamp_curve%n_k) + &
+        !                                    w_theta*whamp_curve%omega(i_theta_hi,whamp_curve%n_k)) &
+        !                                    + whamp_curve%k(whamp_curve%n_k)*cos(theta)*vpar &
+        !                                    - real(nres)*real(sqe)*omega_e/gamma1 )
+        !    close(89)
+        !end if
+
+        if (whamp_curve%valid(i_theta_lo, 1) .and. whamp_curve%valid(i_theta_hi, 1)) then
+            f_at_zero_pos = 0.0d0 - real(nres)*real(sqe)*omega_e/gamma1
+            f_at_zero_neg = 0.0d0 - real(nres)*real(sqe)*omega_e/gamma1  ! same at k=0 since k*vpar term vanishes
+
+            omega_first = (1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,1) + w_theta*whamp_curve%omega(i_theta_hi,1)
+            k_first     = whamp_curve%k(1)
+
+            f_first_pos = omega_first - k_first*cos(theta)*vpar - real(nres)*real(sqe)*omega_e/gamma1
+            f_first_neg = omega_first + k_first*cos(theta)*vpar - real(nres)*real(sqe)*omega_e/gamma1
+
+            if (f_at_zero_pos * f_first_pos < 0.0d0) then
+                frac = f_at_zero_pos / (f_at_zero_pos - f_first_pos)
+                omega_res = 0.0d0 + frac * (omega_first - 0.0d0)
+                if (omega_res > omega_lc .and. omega_res < omega_uc) then
+                    roots(1)   = omega_res
+                    root_found = .true.
+                end if
+            else if (.not. root_found .and. f_at_zero_neg * f_first_neg < 0.0d0) then
+                frac = f_at_zero_neg / (f_at_zero_neg - f_first_neg)
+                omega_res = 0.0d0 + frac * (omega_first - 0.0d0)
+                if (omega_res > omega_lc .and. omega_res < omega_uc) then
+                    roots(1)   = omega_res
+                    root_found = .true.
+                end if
+            end if
+        end if
+
         do i_k = 1, whamp_curve%n_k
             if (.not. whamp_curve%valid(i_theta_lo, i_k)) cycle
             if (.not. whamp_curve%valid(i_theta_hi, i_k)) cycle
@@ -209,6 +257,13 @@ implicit none
             f_prev_pos = f_curr_pos
             f_prev_neg = f_curr_neg
         end do
+
+        if (E > 0.18d0 .and. E < 0.2d0 .and. abs(alpha_ne*180.0d0/PI - 56.67d0) < 1.0d0 &
+            .and. (nres == 1 .or. nres == -1)) then
+            open(88, file='root_a0005_debug.txt', status='unknown', position='append')
+            write(88,*) 'nres=', nres, ' root_found=', root_found, ' omega=', roots(1)
+            close(88)
+        end if
         return
     end if
 
@@ -314,6 +369,17 @@ implicit none
             end if
         end do
 
+    end if
+
+    if (E > 1.9d0 .and. E < 2.0d0 .and. abs(alpha_ne*180.0d0/PI - 10.0d0) < 1.0d0 &
+        .and. nres == -1 .and. trim(DispersionType) == 'COLD') then
+        open(88, file='cold_omega_nresmin1.txt', status='unknown', position='append')
+        write(88,*) 'theta=', theta*180.0d0/PI, ' NN=', NN, &
+                    ' root1(Hz)=', roots(1)/(2.0d0*PI), &
+                    ' root2(Hz)=', roots(2)/(2.0d0*PI), &
+                    ' root3(Hz)=', roots(3)/(2.0d0*PI), &
+                    ' root4(Hz)=', roots(4)/(2.0d0*PI)
+        close(88)
     end if
 
     n_roots_calls = n_roots_calls + 1

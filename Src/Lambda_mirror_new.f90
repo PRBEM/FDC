@@ -60,6 +60,8 @@ implicit none
     real*8  :: root
     integer :: i
 
+    real*8, parameter :: TOL_IMAG = 1.0d-8
+
     BB = sin(alpha)
 
     ! Polynomial coefficients for cos^6(lambda_m) = sin^2(alpha)*(1+3sin^2(lambda_m))^0.5
@@ -77,12 +79,16 @@ implicit none
     ! Find the physically valid root: real, in [0, 1]
     root = 0.0
     do i = 1, 6
-        if (rti(i) == 0.0) then
+        if (abs(rti(i)) < TOL_IMAG) then
             if (rtr(i) >= 0.0 .and. rtr(i) <= 1.0) then
                 root = rtr(i)
             end if
         end if
     end do
+
+    if (root == 0.0) then
+        write(*,*) 'WARNING: Lambda_mirror_new found no valid root for alpha=', alpha
+    end if
 
     ! Mirror latitude, reduced slightly to avoid the mirror point singularity
     lambda_m = acos(sqrt(root)) * 0.999

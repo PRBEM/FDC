@@ -67,7 +67,8 @@
 !
 ! ==============================================================================
 
-subroutine Integration_lambda(lambda_m, lambda_min, nint_tmp, B_m, alpha, E, L, nres, BavRate)
+subroutine Integration_lambda(lambda_m, lambda_min, nint_tmp, B_m, alpha, E, L, nres, BavRate, &
+                               whamp_curves, lambda_grid, n_lambda_in)
 use constants
 use dispersion
 implicit none
@@ -76,6 +77,9 @@ implicit none
   integer,intent(in)::nint_tmp, nres
   real*8,intent(out)::BavRate(3)
 
+  integer, intent(in) :: n_lambda_in
+  type(WHAMPCurve), intent(in) :: whamp_curves(n_lambda_in)
+  real*8, intent(in) :: lambda_grid(n_lambda_in)  
 
   real*8::psi(nint_tmp+1)
   real*8::Bfield(nint_tmp+2)
@@ -92,18 +96,24 @@ implicit none
   ! HOT plasma: local plasma frequencies and WHAMP dispersion curve
   real*8 :: Ne_local, fce_khz, fpe_khz
   type(WHAMPCurve) :: curve
-  logical :: curve_allocated
-  integer :: whamp_cache_hit_slot
 
   real*8 :: t_prof_1, t_prof_2
 
   real*8 :: Theta_function(7)
+
+  logical :: use_shared
+  integer :: jmatch
+  real*8, parameter :: LAMBDA_MATCH_TOL = 1.0d-8
 
   delta_lambda=(lambda_m-lambda_min)/real(nint_tmp)     ! step of magnetic latitude in rad
 
   BavRate(1) = 0.0
   BavRate(2) = 0.0
   BavRate(3) = 0.0
+
+  ! Shared curves only valid for nres/=0 (nint grid); nres=0 uses nint_zero_res
+  use_shared = (DispersionType == 'HOT' .and. nres /= 0 .and. &
+                n_lambda_in == nint_tmp+1 .and. size(whamp_curves) == nint_tmp+1)
 
   if (delta_lambda > 0.0) then
     call cpu_time(t_prof_1)
@@ -127,69 +137,22 @@ implicit none
 	call b_field(L, lambda_m + delta_lambda, B_local)
     Bfield(nint_tmp+2) = B_local
 
-    curve_allocated = .false.
     curve%n_k     = 0
     curve%n_theta = 0
     curve%fce_khz = 0.0d0
     curve%fpe_khz = 0.0d0
 
-    ! Check if the cache already has curves for this (L, alpha) pair
-    if (DispersionType == 'HOT') then
-        block
-            integer :: islot, ifound, ioldest, ioldest_time
-
-            ! Search for a matching cache entry
-            ifound = 0
-            do islot = 1, WHAMP_CACHE_SIZE
-                if (whamp_cache(islot)%valid .and. &
-                    whamp_cache(islot)%L_cached == L .and. &
-                    whamp_cache(islot)%alpha_cached == alpha .and. &
-                    whamp_cache(islot)%n_lambda_cached == nint_tmp+1) then
-                    ifound = islot
-                    exit
-                end if
-            end do
-
-            if (ifound == 0) then
-                ! Cache miss: find a slot to fill (prefer an empty one,
-                ! otherwise evict the least-recently-used slot)
-                ioldest = 1
-                ioldest_time = whamp_cache_last_used(1)
-                do islot = 1, WHAMP_CACHE_SIZE
-                    if (.not. whamp_cache(islot)%valid) then
-                        ioldest = islot
-                        exit
-                    end if
-                    if (whamp_cache_last_used(islot) < ioldest_time) then
-                        ioldest = islot
-                        ioldest_time = whamp_cache_last_used(islot)
-                    end if
-                end do
-                ifound = ioldest
-
-                if (whamp_cache(ifound)%valid) then
-                    block
-                        integer :: jc
-                        do jc = 1, size(whamp_cache(ifound)%curves)
-                            deallocate(whamp_cache(ifound)%curves(jc)%theta, &
-                                       whamp_cache(ifound)%curves(jc)%k, &
-                                       whamp_cache(ifound)%curves(jc)%k_whamp, &
-                                       whamp_cache(ifound)%curves(jc)%omega, &
-                                       whamp_cache(ifound)%curves(jc)%dw_dk, &
-                                       whamp_cache(ifound)%curves(jc)%valid, &
-                                       whamp_cache(ifound)%curves(jc)%EFL)
-                        end do
-                    end block
-                    deallocate(whamp_cache(ifound)%curves)
-                    deallocate(whamp_cache(ifound)%lambda_cached)
-                end if
-
-                allocate(whamp_cache(ifound)%curves(nint_tmp+1))
-                allocate(whamp_cache(ifound)%lambda_cached(nint_tmp+1))
-
-                do j = 1, nint_tmp+1
-                    lambda = lambda_min + delta_lambda * real(j-1)
-                    whamp_cache(ifound)%lambda_cached(j) = lambda
+    ! -------------------------------------------------------------------------
+    ! Main lambda loop: reuse cached curves (HOT) or do nothing extra (COLD)
+    ! -------------------------------------------------------------------------
+    do j = 1, nint_tmp+1
+        lambda = lambda_min + delta_lambda * real(j-1)
+        if (DispersionType == 'HOT') then
+            if (use_shared) then
+                ! Direct lookup - lambda grids match exactly by construction
+                jmatch = j
+                if (abs(lambda_grid(jmatch) - lambda) > LAMBDA_MATCH_TOL) then
+                    ! Safety fallback: grids didn't match as expected, recompute fresh
                     call B_field(L, lambda, B_local)
                     call ElectronDensity(L, lambda, Ne_local)
                     fce_khz = qe * B_local / me / (2.0d0 * PI * 1.0d3)
@@ -198,34 +161,57 @@ implicit none
                     call get_whamp_dispersion(fce_khz, fpe_khz, &
                                               Theta_function(5)*PI/180.0d0, &
                                               Theta_function(6)*PI/180.0d0, &
-                                              whamp_cache(ifound)%curves(j))
-                end do
-
-                whamp_cache(ifound)%L_cached = L
-                whamp_cache(ifound)%alpha_cached = alpha
-                whamp_cache(ifound)%n_lambda_cached = nint_tmp+1
-                whamp_cache(ifound)%valid = .true.
+                                              curve)
+                    call int_D_loc(alpha, E, L, nres, lambda, D_integrad, curve)
+                    if (E > 1.9d0 .and. E < 2.0d0 .and. (abs(alpha*180.0d0/PI - 10.0d0) < 0.5d0 .or. &
+                                                        abs(alpha*180.0d0/PI - 80.0d0) < 0.5d0)) then
+                        open(92, file='dintegrad_debug.txt', status='unknown', position='append')
+                        write(92,*) 'alpha(deg)=', alpha*180.0d0/PI, ' lambda(deg)=', lambda*180.0d0/PI, &
+                                    ' D_integrad(1)=', D_integrad(1), ' D_integrad(2)=', D_integrad(2)
+                        close(92)
+                    end if
+                    deallocate(curve%theta, curve%k, curve%k_whamp, &
+                               curve%omega, curve%dw_dk, curve%valid, curve%EFL)
+                else
+                    call int_D_loc(alpha, E, L, nres, lambda, D_integrad, whamp_curves(jmatch))
+                    if (E > 1.9d0 .and. E < 2.0d0 .and. (abs(alpha*180.0d0/PI - 10.0d0) < 0.5d0 .or. &
+                                                        abs(alpha*180.0d0/PI - 80.0d0) < 0.5d0)) then
+                        open(92, file='dintegrad_debug.txt', status='unknown', position='append')
+                        write(92,*) 'alpha(deg)=', alpha*180.0d0/PI, ' lambda(deg)=', lambda*180.0d0/PI, &
+                                    ' D_integrad(1)=', D_integrad(1), ' D_integrad(2)=', D_integrad(2)
+                        close(92)
+                    end if
+                end if
+            else
+                call B_field(L, lambda, B_local)
+                call ElectronDensity(L, lambda, Ne_local)
+                fce_khz = qe * B_local / me / (2.0d0 * PI * 1.0d3)
+                fpe_khz = sqrt(Ne_local * qe * qe / (C0 * me)) / (2.0d0 * PI * 1.0d3)
+                call Theta_wave(L, lambda, Theta_function)
+                call get_whamp_dispersion(fce_khz, fpe_khz, &
+                                          Theta_function(5)*PI/180.0d0, &
+                                          Theta_function(6)*PI/180.0d0, &
+                                          curve)
+                call int_D_loc(alpha, E, L, nres, lambda, D_integrad, curve)
+                    if (E > 1.9d0 .and. E < 2.0d0 .and. (abs(alpha*180.0d0/PI - 10.0d0) < 0.5d0 .or. &
+                                                        abs(alpha*180.0d0/PI - 80.0d0) < 0.5d0)) then
+                        open(92, file='dintegrad_debug.txt', status='unknown', position='append')
+                        write(92,*) 'alpha(deg)=', alpha*180.0d0/PI, ' lambda(deg)=', lambda*180.0d0/PI, &
+                                    ' D_integrad(1)=', D_integrad(1), ' D_integrad(2)=', D_integrad(2)
+                        close(92)
+                    end if
+                deallocate(curve%theta, curve%k, curve%k_whamp, &
+                           curve%omega, curve%dw_dk, curve%valid, curve%EFL)
             end if
-
-            whamp_cache_lru_counter = whamp_cache_lru_counter + 1
-            whamp_cache_last_used(ifound) = whamp_cache_lru_counter
-            whamp_cache_hit_slot = ifound   ! used below in the main loop
-        end block
-    end if
-
-    ! -------------------------------------------------------------------------
-    ! Main lambda loop: reuse cached curves (HOT) or do nothing extra (COLD)
-    ! -------------------------------------------------------------------------
-    do j = 1, nint_tmp+1
-        lambda = lambda_min + delta_lambda * real(j-1)
-
-        if (DispersionType == 'HOT') then
-           curve = whamp_cache(whamp_cache_hit_slot)%curves(j)   ! deep copy
-            call int_D_loc(alpha, E, L, nres, lambda, D_integrad, curve)
-            deallocate(curve%theta, curve%k, curve%k_whamp, &
-                       curve%omega, curve%dw_dk, curve%valid, curve%EFL)
         else
             call int_D_loc(alpha, E, L, nres, lambda, D_integrad, curve)
+            if (E > 1.9d0 .and. E < 2.0d0 .and. (abs(alpha*180.0d0/PI - 10.0d0) < 0.5d0 .or. &
+                                                abs(alpha*180.0d0/PI - 80.0d0) < 0.5d0)) then
+                open(92, file='dintegrad_debug.txt', status='unknown', position='append')
+                write(92,*) 'alpha(deg)=', alpha*180.0d0/PI, ' lambda(deg)=', lambda*180.0d0/PI, &
+                            ' D_integrad(1)=', D_integrad(1), ' D_integrad(2)=', D_integrad(2)
+                close(92)
+            end if
         end if
 
         if (j == 1) then
@@ -248,12 +234,6 @@ implicit none
               BavRate(3) = BavRate(3) + D_integrad(3) * 2*B_m/abs(dB) * cos(psi(j)) * abs(psi(j-1)-psi(j+1))
         end if
     end do
-
-    ! Clean up WHAMP curve if allocated
-    if (curve_allocated) then
-        deallocate(curve%theta, curve%k, curve%k_whamp, &
-                    curve%omega, curve%dw_dk, curve%valid)
-    end if
 
     BavRate(1) = BavRate(1) * delta_lambda
     BavRate(2) = BavRate(2) * delta_lambda

@@ -73,39 +73,32 @@
 !
 ! ==============================================================================
 
-subroutine D_ba(alpha,E,L,nres,BavRate)
+subroutine D_ba(alpha,E,L,nres,BavRate,whamp_curves,lambda_grid,n_lambda_in)
 use constants
+use dispersion
 implicit none
-
-
 
   real*8,intent(in)::alpha,E,L
   integer,intent(in)::nres
   real*8,intent(out)::BavRate(3)
+
+  integer, intent(in) :: n_lambda_in
+  type(WHAMPCurve), intent(in) :: whamp_curves(n_lambda_in)
+  real*8, intent(in) :: lambda_grid(n_lambda_in)
 
   real*8::B_m
   real*8::B_local
   real*8::lambda_tmp
   
   integer::nint_tmp
-
-
   real*8::lambda_min
   real*8::lambda_max
-
-
   real*8::lambda_m
   real*8::lambda_mdeg
-
-
-
   integer::i,j
 
-
-  
   real*8::lambda
   real*8::D_integrad(3)
-
   real*8::A   ! 1/S(alpha), where S(alpha) is proportional to bounce period
   real*8::delta_lambda   ! step of magnetic latitude in rad
 
@@ -135,7 +128,8 @@ implicit none
   end if
 
 
-    call Integration_lambda(lambda_m,lambda_min,nint_tmp,B_m,alpha,E,L,nres,BavRate)
+    call Integration_lambda(lambda_m,lambda_min,nint_tmp,B_m,alpha,E,L,nres,BavRate, &
+                           whamp_curves,lambda_grid,n_lambda_in)
     BavRate(1)=BavRate(1)*A
     BavRate(2)=BavRate(2)*A
     BavRate(3)=BavRate(3)*A

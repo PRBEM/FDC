@@ -103,6 +103,7 @@ implicit none
     real*8 :: t_prof_1, t_prof_2
 
     integer, save :: call_count = 0
+    integer, save :: n_debug_writes = 0
 
     call cpu_time(t_prof_1)
     call_count = call_count + 1
@@ -145,6 +146,17 @@ implicit none
 
     call cold_plasma_stix_derivatives(omega, omega_e, omega_pe, omega_i, omega_pi, &
                                           dPdw_stix, dSdw_stix, dRdw_stix, dLdw_stix)
+    end if
+
+    if (n_debug_writes < 20 .and. E > 1.0d0) then   ! E>1.0 → >511 keV
+        n_debug_writes = n_debug_writes + 1
+        open(97, file='resonance_debug_highE.txt', status='unknown', position='append')
+        write(97,*) 'call=', call_count, &
+                    ' E_keV=', E*511.0d0, &
+                    ' alpha(deg)=', alpha*180.0d0/PI, &
+                    ' omega(Hz)=', omega/(2.0d0*PI), &
+                    ' n_k=', whamp_curve%n_k
+        close(97)
     end if
 
     do i = 1, nint_N_tmp

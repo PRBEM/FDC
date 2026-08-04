@@ -135,7 +135,8 @@ implicit none
     do j = 2, N2
         xr = WR(j); xi = WI(j)
         k = j - 1
-        do while (k >= 1 .and. WR(k) > xr)
+        do while (k >= 1)
+            if (WR(k) <= xr) exit
             WR(k+1) = WR(k); WI(k+1) = WI(k)
             k = k - 1
         end do
@@ -183,7 +184,8 @@ implicit none
     do j = 2, N2
         xr = WR(j); xi = WI(j)
         k = j - 1
-        do while (k >= 1 .and. WR(k) > xr)
+        do while (k >= 1)
+            if (WR(k) <= xr) exit
             WR(k+1) = WR(k); WI(k+1) = WI(k)
             k = k - 1
         end do

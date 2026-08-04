@@ -708,7 +708,7 @@ implicit none
     real*8, parameter :: T_cold_keV    = 0.001d0  ! cold species temperature
     real*8, parameter :: T_hot_par_keV = 15.0d0   ! hot electron T_par
     real*8, parameter :: T_hot_anis    = 2.0d0    ! T_perp/T_par for hot electrons
-    real*8, parameter :: k_min_exp_val = -3.0d0   ! k grid
+    real*8, parameter :: k_min_exp_val = -3.5d0   ! k grid
     real*8, parameter :: k_max_exp_val =  1.5d0
     integer, parameter :: n_k          = WHAMP_N_K
     integer, parameter :: n_theta      = WHAMP_N_THETA
@@ -789,17 +789,25 @@ implicit none
  
     XC      = fce_khz           ! electron gyrofrequency [kHz]
     PZL     = 1.0d0             ! log scale for k grid
-    XOI = 0.05d0 / fce_khz      ! starting frequency: 0.5 kHz in omega/Omega_e units
+    !XOI = 0.05d0 / fce_khz      ! starting frequency: 0.5 kHz in omega/Omega_e units
  
     ! -------------------------------------------------------------------------
     ! Call WHAMP for each theta point
     ! -------------------------------------------------------------------------
     do i_theta = 1, n_theta
         theta = curve%theta(i_theta)
-        XOI = 0.05d0 / fce_khz   ! reset starting guess at the start of each theta
-
         do i_k = 1, n_k
             k_whamp = curve%k_whamp(i_k)
+
+            ! Compute per-point initial guess using approximate cold whistler dispersion
+            block
+                real*8 :: k_si_guess, kc_over_wpe_sq
+                k_si_guess = 10.0d0**k_whamp * omega_e_rads * CV_local / c
+                kc_over_wpe_sq = (k_si_guess * c / (2.0d0*PI*fpe_khz*1.0d3))**2.0d0
+                XOI = cos(theta) * kc_over_wpe_sq / (1.0d0 + kc_over_wpe_sq)
+                ! Guard against XOI being exactly 0 or negative (WHAMP may need a small positive seed)
+                if (XOI < 1.0d-6) XOI = 1.0d-6
+            end block
 
             PZL = 1.0d0
             if (abs(theta) < 1.0d-6) then
@@ -822,23 +830,118 @@ implicit none
 
             if (flagSolutionFoundOUT(1, 1) == 1) then
                 block
-                    real*8 :: omega_candidate
+                    real*8 :: omega_candidate, ratio_check
                     omega_candidate = real(fOUT(1, 1)) * omega_e_rads
-                    if (omega_candidate > 0.0d0 .and. omega_candidate < omega_e_rads) then
+                    ! Reject solutions that landed far from our whistler-branch guess (XOI)
+                    ! -- likely convergence to a spurious/different dispersion branch
+                    if (XOI > 1.0d-10) then
+                        ratio_check = real(fOUT(1,1)) / XOI
+                    else
+                        ratio_check = 1.0d0   ! avoid division issues for XOI near zero
+                    end if
+                    if (omega_candidate > 0.0d0 .and. omega_candidate < omega_e_rads &
+                        .and. ratio_check > 0.2d0 .and. ratio_check < 5.0d0) then
                         curve%valid(i_theta, i_k) = .true.
                         curve%omega(i_theta, i_k) = omega_candidate
                         curve%dw_dk(i_theta, i_k) = VGZOUT(1, 1) * c / CV
                         curve%EFL(1, i_theta, i_k) = ExOUT(1, 1)
                         curve%EFL(2, i_theta, i_k) = EyOUT(1, 1)
                         curve%EFL(3, i_theta, i_k) = EzOUT(1, 1)
-                        XOI = real(fOUT(1, 1))
                     end if
                 end block
             end if
+
+            if (i_theta == 18 .and. flagSolutionFoundOUT(1,1) == 1) then
+                open(82, file='omega_ratio_a0005.txt', status='unknown', position='append')
+                write(82,*) 'i_k=', i_k, ' omega_over_omega_e=', real(fOUT(1,1))
+                close(82)
+            end if
+
+            if (i_theta == 18) then
+                open(83, file='xoi_convergence_a0005.txt', status='unknown', position='append')
+                write(83,*) 'i_k=', i_k, ' k_whamp=', k_whamp, ' XOI_guess=', XOI, &
+                            ' converged=', (flagSolutionFoundOUT(1,1) == 1), &
+                            ' curve_valid=', curve%valid(i_theta, i_k)
+                close(83)
+            end if
         end do
     end do
+
+    open(99, file='whamp_debug_check_a0005.txt', status='unknown', position='append')
+    write(99,*) 'fce=', fce_khz, ' fpe=', fpe_khz, &
+                ' omega_min(Hz)=', minval(curve%omega, mask=curve%valid)/(2.0d0*PI), &
+                ' omega_max(Hz)=', maxval(curve%omega, mask=curve%valid)/(2.0d0*PI), &
+                ' valid_count=', count(curve%valid), '/', size(curve%valid)
+    close(99)
  
 end subroutine get_whamp_dispersion
+
+subroutine get_whamp_point(fce_khz, fpe_khz, theta, k_target, omega_guess, &
+                            n_ref_ind2_out, dw_dk_out, EFL_out, valid_out)
+    use constants
+    use comin
+    use comoutput
+    use comcout
+    implicit none
+    real*8, intent(in)  :: fce_khz, fpe_khz, theta, k_target, omega_guess
+    real*8, intent(out) :: n_ref_ind2_out, dw_dk_out
+    complex(kind=8), intent(out) :: EFL_out(3)
+    logical, intent(out) :: valid_out
+
+    real*8 :: omega_e_rads, CV_local, TR_local, k_whamp
+    real*8, parameter :: T_cold_keV = 0.001d0
+    real*8 :: ratio_check
+
+    valid_out = .false.
+    n_ref_ind2_out = 0.0d0
+    dw_dk_out = 0.0d0
+    EFL_out = (0.0d0, 0.0d0)
+
+    if (k_target <= 0.0d0 .or. omega_guess <= 0.0d0) return
+
+    omega_e_rads = 2.0d0 * PI * fce_khz * 1.0d3
+    TR_local = T_cold_keV
+    CV_local = TR_local*(1022.0d0 + TR_local)/(511.0d0 + TR_local)**2.0d0
+    CV_local = 1.0d0 / sqrt(CV_local)
+
+    k_whamp = log10(k_target / (omega_e_rads * CV_local / c))
+
+    XC  = fce_khz
+    PZL = 1.0d0
+    XOI = omega_guess / omega_e_rads   ! excellent seed - we already know the answer closely
+
+    if (abs(theta) < 1.0d-6) then
+        PM(1) = -10.0d0; PM(2) = -10.0d0; PM(3) = 1.0d0
+        ZM(1) = k_whamp; ZM(2) = k_whamp; ZM(3) = 1.0d0
+    else
+        PM(1) = k_whamp + log10(sin(theta)); PM(2) = PM(1); PM(3) = 1.0d0
+        ZM(1) = k_whamp + log10(cos(theta)); ZM(2) = ZM(1); ZM(3) = 1.0d0
+    end if
+
+    call whamp_engine
+
+    open(80, file='whamp_point_internal.txt', status='unknown', position='append')
+    write(80,*) 'flag=', flagSolutionFoundOUT(1,1), ' fOUT=', real(fOUT(1,1)), ' XOI_in=', XOI
+    close(80)
+
+    if (flagSolutionFoundOUT(1, 1) == 1) then
+        block
+            real*8 :: omega_candidate
+            omega_candidate = real(fOUT(1, 1)) * omega_e_rads
+            ratio_check = real(fOUT(1,1)) / XOI
+            if (omega_candidate > 0.0d0 .and. omega_candidate < omega_e_rads &
+                .and. ratio_check > 0.5d0 .and. ratio_check < 2.0d0) then
+                valid_out = .true.
+                n_ref_ind2_out = (k_target * c / omega_candidate)**2.0d0
+                dw_dk_out = VGZOUT(1, 1) * c / CV_local
+                EFL_out(1) = ExOUT(1, 1)
+                EFL_out(2) = EyOUT(1, 1)
+                EFL_out(3) = EzOUT(1, 1)
+            end if
+        end block
+    end if
+end subroutine get_whamp_point
+
 
 subroutine hot_plasma_polarisation(alpha_ne, nres, &
                                    BesselF1, BesselF2, BesselF3, &
