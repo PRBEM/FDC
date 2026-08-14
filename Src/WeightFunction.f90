@@ -140,6 +140,8 @@ implicit none
 
     ! --- Resonant frequency roots ---
     real*8 :: roots(4)
+    real*8 :: k_sign(4)   ! unused here — WeightFunction derives k_vec's sign
+                          ! directly from the resonance condition below
     integer :: i
 
     ! --- Dispersion quantities (from module dispersion) ---
@@ -237,9 +239,9 @@ implicit none
     ! Find resonant frequencies
     ! -------------------------------------------------------------------------
     call Roots_finder(alpha, E, L, lambda, nres, theta, &
-                      omega_e, omega_pe, omega_i, omega_pi, &
-                      omega_lc, omega_uc, &
-                      roots, whamp_curve)
+                        omega_e, omega_pe, omega_i, omega_pi, &
+                        omega_lc, omega_uc, &
+                        roots, whamp_curve, k_sign)
 
     ! -------------------------------------------------------------------------
     ! Loop over resonant frequency roots
@@ -261,11 +263,11 @@ implicit none
                     / (c * betta * cos(alpha_ne) * cos(theta))
 
             ! Consistency check: k_vec should be positive for nres > 0
-            if ((nres > 0) .and. (k_vec < 0)) then
-                write(*,*) 'ERROR: negative k_vec for positive resonance harmonic'
-                write(*,*) 'N = ', nres, '  Root = ', omega
-                stop
-            end if
+            !if ((nres > 0) .and. (k_vec < 0)) then
+            !    write(*,*) 'ERROR: negative k_vec for positive resonance harmonic'
+            !    write(*,*) 'N = ', nres, '  Root = ', omega
+            !    stop
+            !end if
 
             ! -----------------------------------------------------------------
             ! Dispersion properties via module dispersion
@@ -333,14 +335,14 @@ implicit none
                             omega_hi_t = (1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,i_k)   + &
                                         w_theta*whamp_curve%omega(i_theta_hi,i_k)
 
-                            if (E > 0.18d0 .and. E < 0.2d0 .and. abs(alpha_ne*180.0d0/PI - 56.67d0) < 1.0d0 &
-                                .and. nres == 1 .and. omega_hi_t > 20000.0d0 .and. omega_lo_t < 25000.0d0) then
-                                open(86, file='bracket_a0005_near22k.txt', status='unknown', position='append')
-                                write(86,*) 'omega_target=', omega, ' i_k=', i_k, &
-                                            ' omega_lo_t=', omega_lo_t, ' omega_hi_t=', omega_hi_t, &
-                                            ' valid_lo=', valid_lo, ' valid_hi=', valid_hi
-                                close(86)
-                            end if
+                            !if (E > 0.18d0 .and. E < 0.2d0 .and. abs(alpha_ne*180.0d0/PI - 56.67d0) < 1.0d0 &
+                            !    .and. nres == 1 .and. omega_hi_t > 20000.0d0 .and. omega_lo_t < 25000.0d0) then
+                            !    open(86, file='bracket_a0005_near22k.txt', status='unknown', position='append')
+                            !    write(86,*) 'omega_target=', omega, ' i_k=', i_k, &
+                            !                ' omega_lo_t=', omega_lo_t, ' omega_hi_t=', omega_hi_t, &
+                            !                ' valid_lo=', valid_lo, ' valid_hi=', valid_hi
+                            !    close(86)
+                            !end if
 
                             if (omega_lo_t <= omega .and. omega_hi_t >= omega) then
                                 frac  = (omega - omega_lo_t) / (omega_hi_t - omega_lo_t)
@@ -447,35 +449,16 @@ implicit none
                                 call get_whamp_point(whamp_curve%fce_khz, whamp_curve%fpe_khz, theta, &
                                                     abs(k_vec), omega, &
                                                     n2_targeted, dw_targeted, EFL_targeted, valid_targeted)
-                                if (.not. found) then
-                                    block
-                                        real*8 :: n2_targeted, dw_targeted
-                                        complex(kind=8) :: EFL_targeted(3)
-                                        logical :: valid_targeted
-                                        call get_whamp_point(whamp_curve%fce_khz, whamp_curve%fpe_khz, theta, &
-                                                            abs(k_vec), omega, &
-                                                            n2_targeted, dw_targeted, EFL_targeted, valid_targeted)
 
-                                        if (E > 0.055d0 .and. E < 0.062d0 .and. abs(alpha_ne*180.0d0/PI - 10.0d0) < 1.0d0 &
-                                            .and. nres == 1) then
-                                            open(81, file='rescue_debug.txt', status='unknown', position='append')
-                                            write(81,*) 'rescue attempted: valid_targeted=', valid_targeted, &
-                                                        ' k_vec=', k_vec, ' omega=', omega, &
-                                                        ' fce=', whamp_curve%fce_khz, ' fpe=', whamp_curve%fpe_khz
-                                            close(81)
-                                        end if
+                                !if (E > 0.055d0 .and. E < 0.062d0 .and. abs(alpha_ne*180.0d0/PI - 10.0d0) < 1.0d0 &
+                                !    .and. nres == 1) then
+                                !    open(81, file='rescue_debug.txt', status='unknown', position='append')
+                                !    write(81,*) 'rescue attempted: valid_targeted=', valid_targeted, &
+                                !                ' k_vec=', k_vec, ' omega=', omega, &
+                                !                ' fce=', whamp_curve%fce_khz, ' fpe=', whamp_curve%fpe_khz
+                                !    close(81)
+                                !end if
 
-                                        if (valid_targeted) then
-                                            n_ref_ind2 = n2_targeted
-                                            dw_dk      = dw_targeted
-                                            if (k_vec < 0.0d0) dw_dk = -dw_dk
-                                            DP%EFL(1) = EFL_targeted(1)
-                                            DP%EFL(2) = EFL_targeted(2)
-                                            DP%EFL(3) = EFL_targeted(3)
-                                            found = .true.
-                                        end if
-                                    end block
-                                end if
                                 if (valid_targeted) then
                                     n_ref_ind2 = n2_targeted
                                     dw_dk      = dw_targeted
@@ -487,21 +470,19 @@ implicit none
                                 end if
                             end block
                         end if
-                        if (E > 0.18d0 .and. E < 0.2d0 .and. abs(alpha_ne*180.0d0/PI - 56.67d0) < 1.0d0 &
-                            .and. nres == 1) then
-                            open(87, file='interp_a0005_debug.txt', status='unknown', position='append')
-                            write(87,*) 'omega=', omega, ' found=', found, &
-                                        ' n_ref_ind2=', n_ref_ind2, ' dw_dk=', dw_dk
-                            close(87)
-                        end if
+                        !if (E > 0.18d0 .and. E < 0.2d0 .and. abs(alpha_ne*180.0d0/PI - 56.67d0) < 1.0d0 &
+                        !    .and. nres == 1) then
+                        !    open(87, file='interp_a0005_debug.txt', status='unknown', position='append')
+                        !    write(87,*) 'omega=', omega, ' found=', found, &
+                        !                ' n_ref_ind2=', n_ref_ind2, ' dw_dk=', dw_dk
+                        !    close(87)
+                        !end if
                         if (.not. found) then
                             ! Both primary interpolation and targeted rescue failed for this
-                            ! resonance/theta/frequency sub-step. Skip this contribution rather
-                            ! than propagating NaN through the whole bounce-average.
-                            D_tmp(1) = 0.0d0
-                            D_tmp(2) = 0.0d0
-                            D_tmp(3) = 0.0d0
-                            ! (leave the rest of the loop to continue normally to the next sub-step)
+                            ! resonance/theta/frequency sub-step. Skip this root's contribution
+                            ! entirely — do NOT fall through to the integrand calculation below,
+                            ! which would otherwise use stale cold-dispersion n_ref_ind2/dw_dk.
+                            cycle
                         end if
                     end block
                 end block
@@ -510,18 +491,20 @@ implicit none
             ! -----------------------------------------------------------------
             ! Resonance cone check
             ! -----------------------------------------------------------------
-            res_cone     = 'N'
+            res_cone      = 'N'
             theta_max_eff = theta_max   ! degrees
 
-            if (DP%P / DP%S < 0) then
-                theta_cone = atan(sqrt(-DP%P / DP%S)) * 180.0 / PI   ! degrees
+            if (trim(DispersionType) /= 'HOT') then
+                if (DP%P / DP%S < 0) then
+                    theta_cone = atan(sqrt(-DP%P / DP%S)) * 180.0 / PI   ! degrees
 
-                if (theta_cone*0.9 < theta_max .and. theta_cone*0.99 > theta_max) then
-                    res_cone = 'Y'
+                    if (theta_cone*0.9 < theta_max .and. theta_cone*0.99 > theta_max) then
+                        res_cone = 'Y'
 
-                else if (theta_cone*0.99 <= theta_max) then
-                    theta_max_eff = theta_cone * 0.99
-                    res_cone = 'Y'
+                    else if (theta_cone*0.99 <= theta_max) then
+                        theta_max_eff = theta_cone * 0.99
+                        res_cone = 'Y'
+                    end if
                 end if
             end if
 
@@ -619,12 +602,12 @@ implicit none
                 D_tmp(2) = D_tmp(1) * G4
                 D_tmp(3) = D_tmp(2) * G4
 
-            if (E > 0.055d0 .and. E < 0.062d0 .and. abs(alpha_ne*180.0d0/PI - 10.0d0) < 1.0d0 &
-                .and. abs(lambda*180.0d0/PI) < 0.5d0) then
-                open(90, file='dintegrad_a0005_30kev10deg.txt', status='unknown', position='append')
-                write(90,*) 'nres=', nres, ' D_tmp1=', D_tmp(1)
-                close(90)
-            end if
+            !if (E > 0.055d0 .and. E < 0.062d0 .and. abs(alpha_ne*180.0d0/PI - 10.0d0) < 1.0d0 &
+            !    .and. abs(lambda*180.0d0/PI) < 0.5d0) then
+            !    open(90, file='dintegrad_a0005_30kev10deg.txt', status='unknown', position='append')
+            !    write(90,*) 'nres=', nres, ' D_tmp1=', D_tmp(1)
+            !    close(90)
+            !end if
 
             end if
 

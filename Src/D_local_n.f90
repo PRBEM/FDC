@@ -86,12 +86,16 @@ implicit none
  
     ! --- CUNNINGHAM path: per-theta / per-root variables ---
     integer :: j
-    real*8  :: X, gX_raw, roots(4), root_omega
+    real*8  :: X, gX_raw, roots(4), k_sign(4), root_omega
     real*8  :: stix_R, stix_L, stix_P, stix_S, stix_D
     real*8  :: mu2, k_vec, k_par, k_perp
     real*8  :: dD_dk, dD_dw, sterm, phi_sq, norm_factor, PSD, norm_intensity
     real*8  :: DnXaa, DnXap, DnXpp
     real*8  :: term1, term2, term3
+    real*8  :: n_ref_ind2, dw_dk
+    real*8  :: argJ, BesselF1, BesselF2, BesselF3
+    real*8  :: hot_jacobian
+    type(DispersionProperties) :: DP
 
 
     theta_min = Theta_function(5)
@@ -106,14 +110,6 @@ implicit none
     DDN(3) = 0.0
 
     if (trim(DiffusionFormulation) == 'CUNNINGHAM') then
-
-      if (trim(DispersionType) == 'HOT') then
-          write(*,*) 'ERROR: DiffusionFormulation=CUNNINGHAM does not support &
-                      &DispersionType=HOT.'
-          write(*,*) '  Only cold plasma dispersion is implemented for the &
-                      &Cunningham path.'
-          stop
-      end if
 
       theta_m1 = Theta_function(1)
       theta_w1 = Theta_function(2)
@@ -185,10 +181,11 @@ implicit none
 
         ! Resonant frequencies at this theta
         roots = 0.0d0
+        k_sign = 0.0d0
         call Roots_finder(alpha, E, L, lambda, nres, theta, &
                           omega_e, omega_pe, omega_i, omega_pi, &
                           omega_lc, omega_uc, &
-                          roots, whamp_curve)
+                          roots, whamp_curve, k_sign)
 
         DnXaa = 0.0d0
         DnXap = 0.0d0
@@ -202,50 +199,253 @@ implicit none
             ! Skip roots below lower hybrid (same check as WeightFunction)
             if (root_omega <= sqrt((omega_pe/omega_e)**2.0d0 + 1.0d0)) cycle
 
-            ! Stix parameters at this root
-            call cold_plasma_parameters(root_omega, omega_e, omega_pe, &
-                                        omega_i, omega_pi, &
-                                        stix_R, stix_L, stix_P, stix_S, stix_D)
+            if (trim(DispersionType) == 'HOT') then
 
-            ! Refractive index squared (k_vec=0 since unused internally)
-            call cold_plasma_refractive_index(root_omega, theta, &
-                                              stix_P, stix_S, stix_R, stix_L, mu2)
+              ! Initialize
+              n_ref_ind2 = 0.0d0
+              dw_dk      = 0.0d0
+              k_vec = 0.0d0
+              DP%EFL(1)  = (0.0d0, 0.0d0)
+              DP%EFL(2)  = (0.0d0, 0.0d0)
+              DP%EFL(3)  = (0.0d0, 0.0d0)
 
-            if (mu2 <= 0.0d0) cycle
+              if (whamp_curve%n_k > 0) then
+                block
+                    integer :: i_k, i_theta_lo, i_theta_hi
+                    real*8  :: w_theta, omega_lo_t, omega_hi_t
+                    real*8  :: frac, n2_lo, n2_hi, dw_lo, dw_hi
+                    logical :: valid_lo, valid_hi, found
 
-            k_vec = sqrt(mu2) * root_omega / c
-            k_par = (root_omega - b1) / vpar
-            k_perp = k_vec * sin(theta)
+                    ! Find bracketing theta indices
+                    i_theta_lo = 1; i_theta_hi = 1; w_theta = 0.0d0
+                    if (whamp_curve%n_theta > 1) then
+                        if (theta <= whamp_curve%theta(1)) then
+                            i_theta_lo = 1; i_theta_hi = 1
+                        else if (theta >= whamp_curve%theta(whamp_curve%n_theta)) then
+                            i_theta_lo = whamp_curve%n_theta
+                            i_theta_hi = whamp_curve%n_theta
+                        else
+                            do i_k = 2, whamp_curve%n_theta
+                                if (whamp_curve%theta(i_k-1) <= theta .and. &
+                                    whamp_curve%theta(i_k)   >= theta) then
+                                    i_theta_lo = i_k - 1
+                                    i_theta_hi = i_k
+                                    w_theta = (theta - whamp_curve%theta(i_theta_lo)) / &
+                                              (whamp_curve%theta(i_theta_hi) - &
+                                              whamp_curve%theta(i_theta_lo))
+                                    exit
+                                end if
+                            end do
+                        end if
+                    end if
 
-            if (k_perp < 1.0d-30 .and. abs(nres) > 1) cycle
-            ! Dispersion derivatives
-            call dD_dk_dD_dw_cunningham(root_omega, theta, k_vec, mu2, &
-                                        stix_R, stix_L, stix_P, stix_S, &
-                                        omega_e, omega_pe, omega_i, omega_pi, &
-                                        dD_dk, dD_dw)
+                    ! Find bracketing k by interpolated omega
+                    found = .false.
+                    do i_k = 2, whamp_curve%n_k
+                        valid_lo = whamp_curve%valid(i_theta_lo, i_k) .and. &
+                                  whamp_curve%valid(i_theta_lo, i_k-1)
+                        valid_hi = whamp_curve%valid(i_theta_hi, i_k) .and. &
+                                  whamp_curve%valid(i_theta_hi, i_k-1)
+                        if (.not. valid_lo .or. .not. valid_hi) cycle
 
-            if (abs(dD_dw) < 1.0d-99) cycle
+                        omega_lo_t = (1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,i_k-1) + &
+                                      w_theta*whamp_curve%omega(i_theta_hi,i_k-1)
+                        omega_hi_t = (1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,i_k) + &
+                                      w_theta*whamp_curve%omega(i_theta_hi,i_k)
 
-            if (k_par >= 0.0d0) then
-                sterm = vpar + (dD_dk/dD_dw)*sqrt(1.0d0 + X**2.0d0)
+                        if (omega_lo_t <= root_omega .and. omega_hi_t >= root_omega) then
+                            frac  = (root_omega - omega_lo_t) / (omega_hi_t - omega_lo_t)
+                            n2_lo = (whamp_curve%k(i_k-1) * c / omega_lo_t)**2.0d0
+                            n2_hi = (whamp_curve%k(i_k)   * c / omega_hi_t)**2.0d0
+                            dw_lo = (1.0d0-w_theta)*whamp_curve%dw_dk(i_theta_lo,i_k-1) + &
+                                    w_theta*whamp_curve%dw_dk(i_theta_hi,i_k-1)
+                            dw_hi = (1.0d0-w_theta)*whamp_curve%dw_dk(i_theta_lo,i_k) + &
+                                    w_theta*whamp_curve%dw_dk(i_theta_hi,i_k)
+                            n_ref_ind2 = n2_lo + frac * (n2_hi - n2_lo)
+                            dw_dk      = dw_lo + frac * (dw_hi - dw_lo)
+                            if (abs(dw_dk) < 1.0d-6 * c) n_ref_ind2 = 0.0d0
+                            DP%EFL(1) = (1.0d0-w_theta)*whamp_curve%EFL(1,i_theta_lo,i_k-1) + &
+                                        w_theta*whamp_curve%EFL(1,i_theta_hi,i_k-1) + &
+                                        frac*( ((1.0d0-w_theta)*whamp_curve%EFL(1,i_theta_lo,i_k) + &
+                                                w_theta*whamp_curve%EFL(1,i_theta_hi,i_k)) - &
+                                                ((1.0d0-w_theta)*whamp_curve%EFL(1,i_theta_lo,i_k-1) + &
+                                                w_theta*whamp_curve%EFL(1,i_theta_hi,i_k-1)) )
+                            DP%EFL(2) = (1.0d0-w_theta)*whamp_curve%EFL(2,i_theta_lo,i_k-1) + &
+                                        w_theta*whamp_curve%EFL(2,i_theta_hi,i_k-1) + &
+                                        frac*( ((1.0d0-w_theta)*whamp_curve%EFL(2,i_theta_lo,i_k) + &
+                                                w_theta*whamp_curve%EFL(2,i_theta_hi,i_k)) - &
+                                                ((1.0d0-w_theta)*whamp_curve%EFL(2,i_theta_lo,i_k-1) + &
+                                                w_theta*whamp_curve%EFL(2,i_theta_hi,i_k-1)) )
+                            DP%EFL(3) = (1.0d0-w_theta)*whamp_curve%EFL(3,i_theta_lo,i_k-1) + &
+                                        w_theta*whamp_curve%EFL(3,i_theta_hi,i_k-1) + &
+                                        frac*( ((1.0d0-w_theta)*whamp_curve%EFL(3,i_theta_lo,i_k) + &
+                                                w_theta*whamp_curve%EFL(3,i_theta_hi,i_k)) - &
+                                                ((1.0d0-w_theta)*whamp_curve%EFL(3,i_theta_lo,i_k-1) + &
+                                                w_theta*whamp_curve%EFL(3,i_theta_hi,i_k-1)) )
+                            found = .true.
+                            exit
+                        end if
+                    end do
+
+                    ! Tolerance fallback: nearest valid endpoint
+                    if (.not. found) then
+                        block
+                            integer :: i_first_valid, i_last_valid, i_s2
+                            real*8  :: omega_min_t, omega_max_t, tol
+                            logical :: vlo2, vhi2
+                            i_first_valid = 0; i_last_valid = 0
+                            do i_s2 = 1, whamp_curve%n_k
+                                vlo2 = whamp_curve%valid(i_theta_lo, i_s2)
+                                vhi2 = whamp_curve%valid(i_theta_hi, i_s2)
+                                if (vlo2 .and. vhi2) then
+                                    if (i_first_valid == 0) i_first_valid = i_s2
+                                    i_last_valid = i_s2
+                                end if
+                            end do
+                            if (i_first_valid > 0) then
+                                omega_min_t = (1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,i_first_valid) + &
+                                              w_theta*whamp_curve%omega(i_theta_hi,i_first_valid)
+                                omega_max_t = (1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,i_last_valid) + &
+                                              w_theta*whamp_curve%omega(i_theta_hi,i_last_valid)
+                                tol = 0.01d0
+                                if (root_omega > omega_max_t .and. &
+                                    abs(root_omega-omega_max_t) < tol*omega_max_t) then
+                                    n_ref_ind2 = (whamp_curve%k(i_last_valid)*c/omega_max_t)**2.0d0
+                                    dw_dk = (1.0d0-w_theta)*whamp_curve%dw_dk(i_theta_lo,i_last_valid) + &
+                                            w_theta*whamp_curve%dw_dk(i_theta_hi,i_last_valid)
+                                    if (abs(dw_dk) < 1.0d-6*c) n_ref_ind2 = 0.0d0
+                                    DP%EFL(1) = (1.0d0-w_theta)*whamp_curve%EFL(1,i_theta_lo,i_last_valid) + &
+                                                w_theta*whamp_curve%EFL(1,i_theta_hi,i_last_valid)
+                                    DP%EFL(2) = (1.0d0-w_theta)*whamp_curve%EFL(2,i_theta_lo,i_last_valid) + &
+                                                w_theta*whamp_curve%EFL(2,i_theta_hi,i_last_valid)
+                                    DP%EFL(3) = (1.0d0-w_theta)*whamp_curve%EFL(3,i_theta_lo,i_last_valid) + &
+                                                w_theta*whamp_curve%EFL(3,i_theta_hi,i_last_valid)
+                                    found = .true.
+                                else if (root_omega < omega_min_t .and. &
+                                        abs(root_omega-omega_min_t) < tol*omega_min_t) then
+                                    n_ref_ind2 = (whamp_curve%k(i_first_valid)*c/omega_min_t)**2.0d0
+                                    dw_dk = (1.0d0-w_theta)*whamp_curve%dw_dk(i_theta_lo,i_first_valid) + &
+                                            w_theta*whamp_curve%dw_dk(i_theta_hi,i_first_valid)
+                                    if (abs(dw_dk) < 1.0d-6*c) n_ref_ind2 = 0.0d0
+                                    DP%EFL(1) = (1.0d0-w_theta)*whamp_curve%EFL(1,i_theta_lo,i_first_valid) + &
+                                                w_theta*whamp_curve%EFL(1,i_theta_hi,i_first_valid)
+                                    DP%EFL(2) = (1.0d0-w_theta)*whamp_curve%EFL(2,i_theta_lo,i_first_valid) + &
+                                                w_theta*whamp_curve%EFL(2,i_theta_hi,i_first_valid)
+                                    DP%EFL(3) = (1.0d0-w_theta)*whamp_curve%EFL(3,i_theta_lo,i_first_valid) + &
+                                                w_theta*whamp_curve%EFL(3,i_theta_hi,i_first_valid)
+                                    found = .true.
+                                end if
+                            end if
+                        end block
+                    end if
+
+                    ! Targeted rescue via get_whamp_point
+                    if (.not. found) then
+                        block
+                            real*8          :: n2_targeted, dw_targeted
+                            complex(kind=8) :: EFL_targeted(3)
+                            logical         :: valid_targeted
+                            call get_whamp_point(whamp_curve%fce_khz, whamp_curve%fpe_khz, &
+                                                theta, abs(k_vec), root_omega, &
+                                                n2_targeted, dw_targeted, EFL_targeted, &
+                                                valid_targeted)
+                            if (valid_targeted) then
+                                n_ref_ind2 = n2_targeted
+                                dw_dk      = dw_targeted
+                                if (k_vec < 0.0d0) dw_dk = -dw_dk
+                                DP%EFL(1)  = EFL_targeted(1)
+                                DP%EFL(2)  = EFL_targeted(2)
+                                DP%EFL(3)  = EFL_targeted(3)
+                                found = .true.
+                            end if
+                        end block
+                    end if
+
+                    if (.not. found) cycle   ! no valid WHAMP data at this point
+
+                end block
+              end if   ! whamp_curve%n_k > 0
+
+              if (n_ref_ind2 <= 0.0d0) cycle
+              if (abs(dw_dk)  < 1.0d-99) cycle
+
+              k_vec  = sqrt(n_ref_ind2) * root_omega / c
+              k_par  = k_sign(j) * k_vec * cos(theta)
+              k_perp = k_vec * sin(theta)
+
+              if (k_perp < 1.0d-30 .and. abs(nres) > 1) cycle
+
+              if (k_par >= 0.0d0) then
+                  sterm = vpar - dw_dk / cos(theta)
+              else
+                  sterm = vpar + dw_dk / cos(theta)
+              end if
+
+              if (abs(sterm) < 1.0d-99) cycle
+
+              argJ = abs(k_perp) * p_perp / (me * abs(omega_e))
+              call Bessel_FirstKind(argJ, nres-1, BesselF1)
+              call Bessel_FirstKind(argJ, nres,   BesselF2)
+              call Bessel_FirstKind(argJ, nres+1, BesselF3)
+
+              call hot_plasma_polarisation(alpha_ne, nres, &
+                                          BesselF1, BesselF2, BesselF3, &
+                                          DP%EFL, phi_sq)
+
+              hot_jacobian = (k_vec**2 / (1.0d0 + X**2)) * &
+                            (1.0d0/(k_vec * dw_dk) + 1.0d0/root_omega)
+              norm_factor = k_vec * X * abs(hot_jacobian) / (2.0d0*PI**2 * sqrt(1.0d0 + X**2))
+
+
             else
-                sterm = vpar - (dD_dk/dD_dw)*sqrt(1.0d0 + X**2.0d0)
+
+              ! Stix parameters at this root
+              call cold_plasma_parameters(root_omega, omega_e, omega_pe, &
+                                          omega_i, omega_pi, &
+                                          stix_R, stix_L, stix_P, stix_S, stix_D)
+
+              ! Refractive index squared (k_vec=0 since unused internally)
+              call cold_plasma_refractive_index(root_omega, theta, &
+                                                stix_P, stix_S, stix_R, stix_L, mu2)
+
+              if (mu2 <= 0.0d0) cycle
+
+              k_vec = sqrt(mu2) * root_omega / c
+              k_par = (root_omega - b1) / vpar
+              k_perp = k_vec * sin(theta)
+
+              if (k_perp < 1.0d-30 .and. abs(nres) > 1) cycle
+              ! Dispersion derivatives
+              call dD_dk_dD_dw_cunningham(root_omega, theta, k_vec, mu2, &
+                                          stix_R, stix_L, stix_P, stix_S, &
+                                          omega_e, omega_pe, omega_i, omega_pi, &
+                                          dD_dk, dD_dw)
+
+              if (abs(dD_dw) < 1.0d-99) cycle
+
+              if (k_par >= 0.0d0) then
+                  sterm = vpar + (dD_dk/dD_dw)*sqrt(1.0d0 + X**2.0d0)
+              else
+                  sterm = vpar - (dD_dk/dD_dw)*sqrt(1.0d0 + X**2.0d0)
+              end if
+
+              if (abs(sterm) < 1.0d-99) cycle
+
+              ! Phi squared (gyroresonance coupling factor)
+              call phi_squared_cunningham(theta, k_par, k_perp, mu2, &
+                                          stix_R, stix_L, stix_P, stix_S, &
+                                          p_perp, alpha_ne, omega_e, nres, &
+                                          phi_sq)
+
+              call cunningham_jacobian(root_omega, k_vec, theta, mu2, &
+                                      stix_R, stix_L, stix_P, stix_S, &
+                                      omega_e, omega_pe, omega_i, omega_pi, &
+                                      norm_factor)
+
+              norm_factor = k_vec * X * abs(norm_factor) / (2.0d0*PI**2 * sqrt(1.0d0 + X**2))
+
             end if
 
-            if (abs(sterm) < 1.0d-99) cycle
-
-            ! Phi squared (gyroresonance coupling factor)
-            call phi_squared_cunningham(theta, k_par, k_perp, mu2, &
-                                        stix_R, stix_L, stix_P, stix_S, &
-                                        p_perp, alpha_ne, omega_e, nres, &
-                                        phi_sq)
-
-            call cunningham_jacobian(root_omega, k_vec, theta, mu2, &
-                                    stix_R, stix_L, stix_P, stix_S, &
-                                    omega_e, omega_pe, omega_i, omega_pi, &
-                                    norm_factor)
-
-            norm_factor = k_vec * X * abs(norm_factor) / (2.0d0*PI**2 * sqrt(1.0d0 + X**2))
             if (norm_factor < 1.0d-99) cycle
 
             ! Normalised power spectral density

@@ -704,11 +704,11 @@ implicit none
     real*8  :: ne_total, ne_cold, ne_hot
  
     ! Hot plasma parameters (fixed for now)
-    real*8, parameter :: hot_fraction  = 0.10d0    ! cold-only validation test
+    real*8, parameter :: hot_fraction  = 0.10d0  
     real*8, parameter :: T_cold_keV    = 0.001d0  ! cold species temperature
     real*8, parameter :: T_hot_par_keV = 15.0d0   ! hot electron T_par
     real*8, parameter :: T_hot_anis    = 2.0d0    ! T_perp/T_par for hot electrons
-    real*8, parameter :: k_min_exp_val = -3.5d0   ! k grid
+    real*8, parameter :: k_min_exp_val = -4.0d0   ! k grid
     real*8, parameter :: k_max_exp_val =  1.5d0
     integer, parameter :: n_k          = WHAMP_N_K
     integer, parameter :: n_theta      = WHAMP_N_THETA
@@ -779,9 +779,13 @@ implicit none
     TA(2)   = T_cold_keV        ! cold protons   T_par [keV]
     TA(3)   = T_hot_par_keV     ! hot electrons  T_par [keV]
 
-    AA(1,1) = 1.0d0             ! cold electrons T_perp/T_par = 1 (isotropic)
-    AA(2,1) = 1.0d0             ! cold protons   T_perp/T_par = 1 (isotropic)
-    AA(3,1) = T_hot_anis        ! hot electrons  T_perp/T_par anisotropy
+    AA(1,1) = 1.0d0;    AA(1,2) = 1.0d0             ! cold electrons T_perp/T_par = 1 (isotropic)
+    AA(2,1) = 1.0d0;    AA(2,2) = 1.0d0             ! cold protons   T_perp/T_par = 1 (isotropic)
+    AA(3,1) = T_hot_anis;   AA(3,2) = T_hot_anis        ! hot electrons  T_perp/T_par anisotropy
+
+    DD(1)   = 1.0d0
+    DD(2)   = 1.0d0
+    DD(3)   = 1.0d0
 
     ASS(1)  = 0.0d0             ! electrons (mass=0 means electron mass)
     ASS(2)  = 1.0d0             ! protons (mass=1 proton mass)
@@ -851,28 +855,29 @@ implicit none
                 end block
             end if
 
-            if (i_theta == 18 .and. flagSolutionFoundOUT(1,1) == 1) then
-                open(82, file='omega_ratio_a0005.txt', status='unknown', position='append')
-                write(82,*) 'i_k=', i_k, ' omega_over_omega_e=', real(fOUT(1,1))
-                close(82)
-            end if
+            !if (i_theta == 18 .and. flagSolutionFoundOUT(1,1) == 1) then
+            !    open(82, file='omega_ratio_a0005.txt', status='unknown', position='append')
+            !    write(82,*) 'i_k=', i_k, ' omega_over_omega_e=', real(fOUT(1,1))
+            !    close(82)
+            !end if
 
-            if (i_theta == 18) then
-                open(83, file='xoi_convergence_a0005.txt', status='unknown', position='append')
-                write(83,*) 'i_k=', i_k, ' k_whamp=', k_whamp, ' XOI_guess=', XOI, &
-                            ' converged=', (flagSolutionFoundOUT(1,1) == 1), &
-                            ' curve_valid=', curve%valid(i_theta, i_k)
-                close(83)
-            end if
+            !if (i_theta == 1) then
+            !    open(83, file='xoi_convergence_chorus.txt', status='unknown', position='append')
+            !    write(83,*) 'i_k=', i_k, ' fce=', fce_khz, ' fpe=', fpe_khz, &
+            !                ' XOI_guess=', XOI, &
+            !                ' converged=', (flagSolutionFoundOUT(1,1) == 1), &
+            !                ' curve_valid=', curve%valid(i_theta, i_k)
+            !    close(83)
+            !end if
         end do
     end do
 
-    open(99, file='whamp_debug_check_a0005.txt', status='unknown', position='append')
-    write(99,*) 'fce=', fce_khz, ' fpe=', fpe_khz, &
-                ' omega_min(Hz)=', minval(curve%omega, mask=curve%valid)/(2.0d0*PI), &
-                ' omega_max(Hz)=', maxval(curve%omega, mask=curve%valid)/(2.0d0*PI), &
-                ' valid_count=', count(curve%valid), '/', size(curve%valid)
-    close(99)
+    !open(99, file='whamp_debug_check_a0005.txt', status='unknown', position='append')
+    !write(99,*) 'fce=', fce_khz, ' fpe=', fpe_khz, &
+    !            ' omega_min(Hz)=', minval(curve%omega, mask=curve%valid)/(2.0d0*PI), &
+    !            ' omega_max(Hz)=', maxval(curve%omega, mask=curve%valid)/(2.0d0*PI), &
+    !            ' valid_count=', count(curve%valid), '/', size(curve%valid)
+    !close(99)
  
 end subroutine get_whamp_dispersion
 
@@ -920,9 +925,9 @@ subroutine get_whamp_point(fce_khz, fpe_khz, theta, k_target, omega_guess, &
 
     call whamp_engine
 
-    open(80, file='whamp_point_internal.txt', status='unknown', position='append')
-    write(80,*) 'flag=', flagSolutionFoundOUT(1,1), ' fOUT=', real(fOUT(1,1)), ' XOI_in=', XOI
-    close(80)
+    !open(80, file='whamp_point_internal.txt', status='unknown', position='append')
+    !write(80,*) 'flag=', flagSolutionFoundOUT(1,1), ' fOUT=', real(fOUT(1,1)), ' XOI_in=', XOI
+    !close(80)
 
     if (flagSolutionFoundOUT(1, 1) == 1) then
         block

@@ -107,6 +107,7 @@ implicit none
     real*8 :: fce_khz_s, fpe_khz_s, B_local_s, Ne_local_s
     real*8 :: Theta_function_s(7)
     integer :: jj
+    logical, save :: dispersion_dumped = .false.
 
     do i = 1, local_rows2
 
@@ -153,6 +154,11 @@ implicit none
                                         Theta_function_s(6)*PI/180.0d0, &
                                         whamp_curves_shared(jj))
             end do
+            
+            !if (.not. dispersion_dumped .and. DispersionType == 'HOT') then
+            !    dispersion_dumped = .true.
+            !    call dump_dispersion_curve(L, whamp_curves_shared(1))
+            !end if
         else
             ! COLD case: allocate trivially so the array is always in a valid state
             if (allocated(whamp_curves_shared)) then
@@ -176,16 +182,16 @@ implicit none
             whamp_curves_shared(1)%n_theta = 0
         end if
 
-        if (E > 0.18d0 .and. E < 0.2d0 .and. abs(alpha_eq*180.0d0/PI - 56.67d0) < 1.0d0) then
-            block
-                integer :: i_theta_dbg
-                open(84, file='valid_pattern_a0005.txt', status='unknown', position='append')
-                do i_theta_dbg = 1, whamp_curves_shared(1)%n_theta
-                    write(84,'(80L2)') whamp_curves_shared(1)%valid(i_theta_dbg,:)
-                end do
-                close(84)
-            end block
-        end if
+        !if (E > 0.18d0 .and. E < 0.2d0 .and. abs(alpha_eq*180.0d0/PI - 56.67d0) < 1.0d0) then
+        !    block
+        !        integer :: i_theta_dbg
+        !        open(84, file='valid_pattern_a0005.txt', status='unknown', position='append')
+        !        do i_theta_dbg = 1, whamp_curves_shared(1)%n_theta
+        !            write(84,'(80L2)') whamp_curves_shared(1)%valid(i_theta_dbg,:)
+        !        end do
+        !        close(84)
+        !    end block
+        !end if
 
         BavDaa = 0.0
         BavDap = 0.0

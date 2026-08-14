@@ -1,0 +1,15 @@
+# Generated outputs
+*.plt
+*_log.txt
+*.png
+*.csv
+
+# Compiled artifacts
+*.o
+*.mod
+main
+main_*
+!main.f90
+
+# Editor/scratch
+Untitled-*

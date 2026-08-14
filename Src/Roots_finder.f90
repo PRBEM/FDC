@@ -68,16 +68,19 @@
 subroutine Roots_finder(alpha, E, L, lambda, nres, theta, &
                         omega_e, omega_pe, omega_i, omega_pi, &
                         omega_lc, omega_uc, &
-                        roots, whamp_curve)
+                        roots, whamp_curve, k_sign)
 use constants
 use dispersion
 implicit none
+
+    include "mpif.h"
 
     real*8, intent(in)  :: alpha, E, L, lambda, theta
     integer, intent(in) :: nres
     real*8, intent(in)  :: omega_e, omega_pe, omega_i, omega_pi
     real*8, intent(in)  :: omega_lc, omega_uc
     real*8, intent(out) :: roots(4)
+    real*8, intent(out) :: k_sign(4)   ! +1.0 = root from +k branch, -1.0 = root from -k branch
     type(WHAMPCurve), intent(in) :: whamp_curve
 
     ! Cold plasma variables
@@ -140,6 +143,7 @@ implicit none
         roots(2) = 0.0d0
         roots(3) = 0.0d0
         roots(4) = 0.0d0
+        k_sign(1:4) = 0.0d0
         root_found = .false.
  
         ! Find bracketing theta indices and interpolation weight
@@ -208,6 +212,7 @@ implicit none
                 omega_res = 0.0d0 + frac * (omega_first - 0.0d0)
                 if (omega_res > omega_lc .and. omega_res < omega_uc) then
                     roots(1)   = omega_res
+                    k_sign(1)  = 1.0d0
                     root_found = .true.
                 end if
             else if (.not. root_found .and. f_at_zero_neg * f_first_neg < 0.0d0) then
@@ -215,6 +220,7 @@ implicit none
                 omega_res = 0.0d0 + frac * (omega_first - 0.0d0)
                 if (omega_res > omega_lc .and. omega_res < omega_uc) then
                     roots(1)   = omega_res
+                    k_sign(1)  = -1.0d0
                     root_found = .true.
                 end if
             end if
@@ -231,12 +237,24 @@ implicit none
             f_curr_neg = omega_curr + k_curr*cos(theta)*vpar &
                          - real(nres)*real(sqe)*omega_e/gamma1
 
+            if (nres == -1 .and. E > 0.0293d0 .and. E < 0.0295d0 .and. &
+                abs(alpha_ne*180.0d0/PI - 40.0d0) < 0.5d0 .and. &
+                theta*180.0d0/PI < 0.01d0) then
+                open(99, file='single_case_trace.txt', status='unknown', position='append')
+                write(99,'(A,I4,A,ES13.5,A,ES13.5,A,ES13.5,A,L1,A,ES13.5,A,ES13.5)') &
+                    'i_k=', i_k, ' k=', k_curr, ' omega=', omega_curr, &
+                    ' k_prev=', k_prev, ' i_k>1_and_kprev>0=', (i_k > 1 .and. k_prev > 0.0d0), &
+                    ' f_curr_neg=', f_curr_neg, ' f_prev_neg=', f_prev_neg
+                close(99)
+            end if
+
             if (i_k > 1 .and. k_prev > 0.0d0) then
                 if (f_prev_pos * f_curr_pos < 0.0d0) then
                     frac      = f_prev_pos / (f_prev_pos - f_curr_pos)
                     omega_res = omega_prev + frac * (omega_curr - omega_prev)
                     if (omega_res > omega_lc .and. omega_res < omega_uc) then
                         roots(1)   = omega_res
+                        k_sign(1)  = 1.0d0
                         root_found = .true.
                         exit
                     end if
@@ -246,6 +264,7 @@ implicit none
                     omega_res = omega_prev + frac * (omega_curr - omega_prev)
                     if (omega_res > omega_lc .and. omega_res < omega_uc) then
                         roots(1)   = omega_res
+                        k_sign(1)  = -1.0d0
                         root_found = .true.
                         exit
                     end if
@@ -258,12 +277,13 @@ implicit none
             f_prev_neg = f_curr_neg
         end do
 
-        if (E > 0.18d0 .and. E < 0.2d0 .and. abs(alpha_ne*180.0d0/PI - 56.67d0) < 1.0d0 &
-            .and. (nres == 1 .or. nres == -1)) then
-            open(88, file='root_a0005_debug.txt', status='unknown', position='append')
-            write(88,*) 'nres=', nres, ' root_found=', root_found, ' omega=', roots(1)
-            close(88)
-        end if
+        !if (E > 0.18d0 .and. E < 0.2d0 .and. abs(alpha_ne*180.0d0/PI - 56.67d0) < 1.0d0 &
+        !    .and. (nres == 1 .or. nres == -1)) then
+        !    open(88, file='root_a0005_debug.txt', status='unknown', position='append')
+        !    write(88,*) 'nres=', nres, ' root_found=', root_found, ' omega=', roots(1)
+        !    close(88)
+        !end if
+
         return
     end if
 
@@ -330,6 +350,8 @@ implicit none
     roots(2) = 0.0
     roots(3) = 0.0
     roots(4) = 0.0
+    k_sign(1:4) = 0.0d0   ! unused in COLD path; k_par sign is re-derived from
+                          ! the resonance condition directly in D_local_n
     NN = 0
 
     if (nres /= 0) then
@@ -371,16 +393,16 @@ implicit none
 
     end if
 
-    if (E > 1.9d0 .and. E < 2.0d0 .and. abs(alpha_ne*180.0d0/PI - 10.0d0) < 1.0d0 &
-        .and. nres == -1 .and. trim(DispersionType) == 'COLD') then
-        open(88, file='cold_omega_nresmin1.txt', status='unknown', position='append')
-        write(88,*) 'theta=', theta*180.0d0/PI, ' NN=', NN, &
-                    ' root1(Hz)=', roots(1)/(2.0d0*PI), &
-                    ' root2(Hz)=', roots(2)/(2.0d0*PI), &
-                    ' root3(Hz)=', roots(3)/(2.0d0*PI), &
-                    ' root4(Hz)=', roots(4)/(2.0d0*PI)
-        close(88)
-    end if
+    !if (E > 1.9d0 .and. E < 2.0d0 .and. abs(alpha_ne*180.0d0/PI - 10.0d0) < 1.0d0 &
+    !    .and. nres == -1 .and. trim(DispersionType) == 'COLD') then
+    !    open(88, file='cold_omega_nresmin1.txt', status='unknown', position='append')
+    !    write(88,*) 'theta=', theta*180.0d0/PI, ' NN=', NN, &
+    !                ' root1(Hz)=', roots(1)/(2.0d0*PI), &
+    !                ' root2(Hz)=', roots(2)/(2.0d0*PI), &
+    !                ' root3(Hz)=', roots(3)/(2.0d0*PI), &
+    !                ' root4(Hz)=', roots(4)/(2.0d0*PI)
+    !   close(88)
+    !end if
 
     n_roots_calls = n_roots_calls + 1
 

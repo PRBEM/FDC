@@ -148,16 +148,16 @@ implicit none
                                           dPdw_stix, dSdw_stix, dRdw_stix, dLdw_stix)
     end if
 
-    if (n_debug_writes < 20 .and. E > 1.0d0) then   ! E>1.0 → >511 keV
-        n_debug_writes = n_debug_writes + 1
-        open(97, file='resonance_debug_highE.txt', status='unknown', position='append')
-        write(97,*) 'call=', call_count, &
-                    ' E_keV=', E*511.0d0, &
-                    ' alpha(deg)=', alpha*180.0d0/PI, &
-                    ' omega(Hz)=', omega/(2.0d0*PI), &
-                    ' n_k=', whamp_curve%n_k
-        close(97)
-    end if
+    !if (n_debug_writes < 20 .and. E > 1.0d0) then   ! E>1.0 → >511 keV
+    !    n_debug_writes = n_debug_writes + 1
+    !    open(97, file='resonance_debug_highE.txt', status='unknown', position='append')
+    !    write(97,*) 'call=', call_count, &
+    !                ' E_keV=', E*511.0d0, &
+    !                ' alpha(deg)=', alpha*180.0d0/PI, &
+    !                ' omega(Hz)=', omega/(2.0d0*PI), &
+    !                ' n_k=', whamp_curve%n_k
+    !    close(97)
+    !end if
 
     do i = 1, nint_N_tmp
         theta = theta_min / 180.0 * PI + step * (real(i) - 1.0)
@@ -277,6 +277,24 @@ implicit none
                                     found = .false.
                                 end if
                             end if
+                        end if
+                    end block
+                end if
+
+                if (.not. found) then
+                    block
+                        real*8          :: n2_targeted, dw_targeted
+                        complex(kind=8) :: EFL_targeted(3)
+                        logical         :: valid_targeted
+                        call get_whamp_point(whamp_curve%fce_khz, whamp_curve%fpe_khz, &
+                                            theta, abs(k_vec_res), omega, &
+                                            n2_targeted, dw_targeted, EFL_targeted, &
+                                            valid_targeted)
+                        if (valid_targeted) then
+                            DP%n_ref_ind2 = n2_targeted
+                            DP%dw_dk      = dw_targeted
+                            if (k_vec_res < 0.0d0) DP%dw_dk = -DP%dw_dk
+                            found = .true.
                         end if
                     end block
                 end if

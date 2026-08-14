@@ -163,24 +163,24 @@ implicit none
                                               Theta_function(6)*PI/180.0d0, &
                                               curve)
                     call int_D_loc(alpha, E, L, nres, lambda, D_integrad, curve)
-                    if (E > 1.9d0 .and. E < 2.0d0 .and. (abs(alpha*180.0d0/PI - 10.0d0) < 0.5d0 .or. &
-                                                        abs(alpha*180.0d0/PI - 80.0d0) < 0.5d0)) then
-                        open(92, file='dintegrad_debug.txt', status='unknown', position='append')
-                        write(92,*) 'alpha(deg)=', alpha*180.0d0/PI, ' lambda(deg)=', lambda*180.0d0/PI, &
-                                    ' D_integrad(1)=', D_integrad(1), ' D_integrad(2)=', D_integrad(2)
-                        close(92)
-                    end if
+                    !if (E > 1.9d0 .and. E < 2.0d0 .and. (abs(alpha*180.0d0/PI - 10.0d0) < 0.5d0 .or. &
+                    !                                    abs(alpha*180.0d0/PI - 80.0d0) < 0.5d0)) then
+                    !    open(92, file='dintegrad_debug.txt', status='unknown', position='append')
+                    !    write(92,*) 'alpha(deg)=', alpha*180.0d0/PI, ' lambda(deg)=', lambda*180.0d0/PI, &
+                    !                ' D_integrad(1)=', D_integrad(1), ' D_integrad(2)=', D_integrad(2)
+                    !    close(92)
+                    !end if
                     deallocate(curve%theta, curve%k, curve%k_whamp, &
                                curve%omega, curve%dw_dk, curve%valid, curve%EFL)
                 else
                     call int_D_loc(alpha, E, L, nres, lambda, D_integrad, whamp_curves(jmatch))
-                    if (E > 1.9d0 .and. E < 2.0d0 .and. (abs(alpha*180.0d0/PI - 10.0d0) < 0.5d0 .or. &
-                                                        abs(alpha*180.0d0/PI - 80.0d0) < 0.5d0)) then
-                        open(92, file='dintegrad_debug.txt', status='unknown', position='append')
-                        write(92,*) 'alpha(deg)=', alpha*180.0d0/PI, ' lambda(deg)=', lambda*180.0d0/PI, &
-                                    ' D_integrad(1)=', D_integrad(1), ' D_integrad(2)=', D_integrad(2)
-                        close(92)
-                    end if
+                    !if (E > 1.9d0 .and. E < 2.0d0 .and. (abs(alpha*180.0d0/PI - 10.0d0) < 0.5d0 .or. &
+                    !                                    abs(alpha*180.0d0/PI - 80.0d0) < 0.5d0)) then
+                    !    open(92, file='dintegrad_debug.txt', status='unknown', position='append')
+                    !    write(92,*) 'alpha(deg)=', alpha*180.0d0/PI, ' lambda(deg)=', lambda*180.0d0/PI, &
+                    !                ' D_integrad(1)=', D_integrad(1), ' D_integrad(2)=', D_integrad(2)
+                    !    close(92)
+                    !end if
                 end if
             else
                 call B_field(L, lambda, B_local)
@@ -193,25 +193,25 @@ implicit none
                                           Theta_function(6)*PI/180.0d0, &
                                           curve)
                 call int_D_loc(alpha, E, L, nres, lambda, D_integrad, curve)
-                    if (E > 1.9d0 .and. E < 2.0d0 .and. (abs(alpha*180.0d0/PI - 10.0d0) < 0.5d0 .or. &
-                                                        abs(alpha*180.0d0/PI - 80.0d0) < 0.5d0)) then
-                        open(92, file='dintegrad_debug.txt', status='unknown', position='append')
-                        write(92,*) 'alpha(deg)=', alpha*180.0d0/PI, ' lambda(deg)=', lambda*180.0d0/PI, &
-                                    ' D_integrad(1)=', D_integrad(1), ' D_integrad(2)=', D_integrad(2)
-                        close(92)
-                    end if
+                    !if (E > 1.9d0 .and. E < 2.0d0 .and. (abs(alpha*180.0d0/PI - 10.0d0) < 0.5d0 .or. &
+                    !                                    abs(alpha*180.0d0/PI - 80.0d0) < 0.5d0)) then
+                    !    open(92, file='dintegrad_debug.txt', status='unknown', position='append')
+                    !    write(92,*) 'alpha(deg)=', alpha*180.0d0/PI, ' lambda(deg)=', lambda*180.0d0/PI, &
+                    !                ' D_integrad(1)=', D_integrad(1), ' D_integrad(2)=', D_integrad(2)
+                    !    close(92)
+                    !end if
                 deallocate(curve%theta, curve%k, curve%k_whamp, &
                            curve%omega, curve%dw_dk, curve%valid, curve%EFL)
             end if
         else
             call int_D_loc(alpha, E, L, nres, lambda, D_integrad, curve)
-            if (E > 1.9d0 .and. E < 2.0d0 .and. (abs(alpha*180.0d0/PI - 10.0d0) < 0.5d0 .or. &
-                                                abs(alpha*180.0d0/PI - 80.0d0) < 0.5d0)) then
-                open(92, file='dintegrad_debug.txt', status='unknown', position='append')
-                write(92,*) 'alpha(deg)=', alpha*180.0d0/PI, ' lambda(deg)=', lambda*180.0d0/PI, &
-                            ' D_integrad(1)=', D_integrad(1), ' D_integrad(2)=', D_integrad(2)
-                close(92)
-            end if
+            !if (E > 1.9d0 .and. E < 2.0d0 .and. (abs(alpha*180.0d0/PI - 10.0d0) < 0.5d0 .or. &
+            !                                    abs(alpha*180.0d0/PI - 80.0d0) < 0.5d0)) then
+            !    open(92, file='dintegrad_debug.txt', status='unknown', position='append')
+            !    write(92,*) 'alpha(deg)=', alpha*180.0d0/PI, ' lambda(deg)=', lambda*180.0d0/PI, &
+            !                ' D_integrad(1)=', D_integrad(1), ' D_integrad(2)=', D_integrad(2)
+            !    close(92)
+            !end if
         end if
 
         if (j == 1) then
