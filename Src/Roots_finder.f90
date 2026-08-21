@@ -135,7 +135,7 @@ implicit none
     ! -------------------------------------------------------------------------
     ! HOT PLASMA CASE: find resonant k from WHAMP dispersion curve
     ! -------------------------------------------------------------------------
-    if (DispersionType == 'HOT' .and. whamp_curve%n_k > 0) then
+    if ((DispersionType == 'HOT' .or. DispersionType == 'EMIC') .and. whamp_curve%n_k > 0) then
         p    = me * c * sqrt((E + 1.0d0)**2.0d0 - 1.0d0)
         vpar = p / gamma1 / me * cos(alpha_ne)
  

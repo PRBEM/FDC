@@ -27,6 +27,9 @@
 !     2018UBCHORUS                 X         No  (omega_lc, omega_uc only)
 !     2026LBCHORUS                           No  (omega_lc, omega_uc only)
 !     2026UBCHORUS                           No  (omega_lc, omega_uc only)
+!     EMIC_HBAND                             Yes (H+ band, normalized to Omega_p)
+!     EMIC_HEBAND                            Yes (He+ band, normalized to Omega_O+)
+!     EMIC_OBAND                             Yes (O+ band, normalized to Omega_O+)
 !
 ! INPUTS:
 !   L           - Magnetic L-shell [Earth radii, dimensionless]
@@ -201,6 +204,48 @@ implicit none
         case('2026UBCHORUS')
             omega_lc = 0.50*omega_e_eq
             omega_uc = 0.80*omega_e_eq
+
+        ! ----------------------------------------------------------------------
+        ! EMIC_HBAND: hydrogen-band EMIC waves Albert (2003) Sec. 4. omega_m, d_omega normalized to the
+        ! proton gyrofrequency
+        ! ----------------------------------------------------------------------
+        case('EMIC_HBAND')
+            block
+                real*8 :: Omega_p_eq
+                Omega_p_eq = omega_e_eq * me / mi
+                omega_m = 0.6d0 * Omega_p_eq
+                d_omega = 0.1d0 * Omega_p_eq
+                omega_lc = omega_m - d_omega
+                omega_uc = omega_m + d_omega
+            end block
+
+        ! ----------------------------------------------------------------------
+        ! EMIC_HEBAND: helium-band EMIC waves Albert (2003)
+        ! Sec. 4. omega_m, d_omega normalized to the oxygen gyrofrequency
+        ! ----------------------------------------------------------------------
+        case('EMIC_HEBAND')
+            block
+                real*8 :: Omega_O_eq
+                Omega_O_eq = omega_e_eq * me / (16.0d0 * mi)
+                omega_m = 3.0d0 * Omega_O_eq
+                d_omega = 0.5d0 * Omega_O_eq
+                omega_lc = omega_m - d_omega
+                omega_uc = omega_m + d_omega
+            end block
+
+        ! ----------------------------------------------------------------------
+        ! EMIC_OBAND: oxygen-band EMIC waves, Albert (2003)
+        ! Sec. 4. omega_m, d_omega normalized to the oxygen gyrofrequency.
+        ! ----------------------------------------------------------------------
+        case('EMIC_OBAND')
+            block
+                real*8 :: Omega_O_eq
+                Omega_O_eq = omega_e_eq * me / (16.0d0 * mi)
+                omega_m = 0.9d0 * Omega_O_eq
+                d_omega = 0.05d0 * Omega_O_eq
+                omega_lc = omega_m - d_omega
+                omega_uc = omega_m + d_omega
+            end block
 
         case default
             write(*,*) 'ERROR: Invalid FreqUnit = ', trim(FreqUnit)

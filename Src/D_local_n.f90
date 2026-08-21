@@ -109,6 +109,19 @@ implicit none
     DDN(2) = 0.0
     DDN(3) = 0.0
 
+    ! Parallel-only (delta-function angle distribution)
+    if ((theta_max - theta_min) < 1.0d-10) then
+        block
+            real*8 :: WeightValue_parallel(3)
+            call WeightFunction(alpha, E, L, lambda, Bw, Theta_function, nres, &
+                                theta_min/180.0d0*PI, WeightValue_parallel, whamp_curve)
+            DDN(1) = WeightValue_parallel(1)
+            DDN(2) = WeightValue_parallel(2)
+            DDN(3) = WeightValue_parallel(3)
+        end block
+        return
+    end if
+
     if (trim(DiffusionFormulation) == 'CUNNINGHAM') then
 
       theta_m1 = Theta_function(1)
@@ -199,15 +212,19 @@ implicit none
             ! Skip roots below lower hybrid (same check as WeightFunction)
             if (root_omega <= sqrt((omega_pe/omega_e)**2.0d0 + 1.0d0)) cycle
 
-            if (trim(DispersionType) == 'HOT') then
+            if (trim(DispersionType) == 'HOT' .or. trim(DispersionType) == 'EMIC') then
 
-              ! Initialize
-              n_ref_ind2 = 0.0d0
-              dw_dk      = 0.0d0
-              k_vec = 0.0d0
-              DP%EFL(1)  = (0.0d0, 0.0d0)
-              DP%EFL(2)  = (0.0d0, 0.0d0)
-              DP%EFL(3)  = (0.0d0, 0.0d0)
+                ! Initialize
+                n_ref_ind2 = 0.0d0
+                dw_dk      = 0.0d0
+                k_vec = 0.0d0
+                DP%EFL(1)  = (0.0d0, 0.0d0)
+                DP%EFL(2)  = (0.0d0, 0.0d0)
+                DP%EFL(3)  = (0.0d0, 0.0d0)
+                DP%BFL(1) = (0.0d0, 0.0d0)
+                DP%BFL(2) = (0.0d0, 0.0d0)
+                DP%BFL(3) = (0.0d0, 0.0d0)
+
 
               if (whamp_curve%n_k > 0) then
                 block
@@ -282,6 +299,24 @@ implicit none
                                                 w_theta*whamp_curve%EFL(3,i_theta_hi,i_k)) - &
                                                 ((1.0d0-w_theta)*whamp_curve%EFL(3,i_theta_lo,i_k-1) + &
                                                 w_theta*whamp_curve%EFL(3,i_theta_hi,i_k-1)) )
+                            DP%BFL(1) = (1.0d0-w_theta)*whamp_curve%BFL(1,i_theta_lo,i_k-1) + &
+                                        w_theta*whamp_curve%BFL(1,i_theta_hi,i_k-1) + &
+                                        frac*( ((1.0d0-w_theta)*whamp_curve%BFL(1,i_theta_lo,i_k) + &
+                                                w_theta*whamp_curve%BFL(1,i_theta_hi,i_k)) - &
+                                                ((1.0d0-w_theta)*whamp_curve%BFL(1,i_theta_lo,i_k-1) + &
+                                                w_theta*whamp_curve%BFL(1,i_theta_hi,i_k-1)) )
+                            DP%BFL(2) = (1.0d0-w_theta)*whamp_curve%BFL(2,i_theta_lo,i_k-1) + &
+                                        w_theta*whamp_curve%BFL(2,i_theta_hi,i_k-1) + &
+                                        frac*( ((1.0d0-w_theta)*whamp_curve%BFL(2,i_theta_lo,i_k) + &
+                                                w_theta*whamp_curve%BFL(2,i_theta_hi,i_k)) - &
+                                                ((1.0d0-w_theta)*whamp_curve%BFL(2,i_theta_lo,i_k-1) + &
+                                                w_theta*whamp_curve%BFL(2,i_theta_hi,i_k-1)) )
+                            DP%BFL(3) = (1.0d0-w_theta)*whamp_curve%BFL(3,i_theta_lo,i_k-1) + &
+                                        w_theta*whamp_curve%BFL(3,i_theta_hi,i_k-1) + &
+                                        frac*( ((1.0d0-w_theta)*whamp_curve%BFL(3,i_theta_lo,i_k) + &
+                                                w_theta*whamp_curve%BFL(3,i_theta_hi,i_k)) - &
+                                                ((1.0d0-w_theta)*whamp_curve%BFL(3,i_theta_lo,i_k-1) + &
+                                                w_theta*whamp_curve%BFL(3,i_theta_hi,i_k-1)) )
                             found = .true.
                             exit
                         end if
@@ -320,6 +355,12 @@ implicit none
                                                 w_theta*whamp_curve%EFL(2,i_theta_hi,i_last_valid)
                                     DP%EFL(3) = (1.0d0-w_theta)*whamp_curve%EFL(3,i_theta_lo,i_last_valid) + &
                                                 w_theta*whamp_curve%EFL(3,i_theta_hi,i_last_valid)
+                                    DP%BFL(1) = (1.0d0-w_theta)*whamp_curve%BFL(1,i_theta_lo,i_last_valid) + &
+                                                w_theta*whamp_curve%BFL(1,i_theta_hi,i_last_valid)
+                                    DP%BFL(2) = (1.0d0-w_theta)*whamp_curve%BFL(2,i_theta_lo,i_last_valid) + &
+                                                w_theta*whamp_curve%BFL(2,i_theta_hi,i_last_valid)
+                                    DP%BFL(3) = (1.0d0-w_theta)*whamp_curve%BFL(3,i_theta_lo,i_last_valid) + &
+                                                w_theta*whamp_curve%BFL(3,i_theta_hi,i_last_valid)
                                     found = .true.
                                 else if (root_omega < omega_min_t .and. &
                                         abs(root_omega-omega_min_t) < tol*omega_min_t) then
@@ -333,6 +374,12 @@ implicit none
                                                 w_theta*whamp_curve%EFL(2,i_theta_hi,i_first_valid)
                                     DP%EFL(3) = (1.0d0-w_theta)*whamp_curve%EFL(3,i_theta_lo,i_first_valid) + &
                                                 w_theta*whamp_curve%EFL(3,i_theta_hi,i_first_valid)
+                                    DP%BFL(1) = (1.0d0-w_theta)*whamp_curve%BFL(1,i_theta_lo,i_first_valid) + &
+                                                w_theta*whamp_curve%BFL(1,i_theta_hi,i_first_valid)
+                                    DP%BFL(2) = (1.0d0-w_theta)*whamp_curve%BFL(2,i_theta_lo,i_first_valid) + &
+                                                w_theta*whamp_curve%BFL(2,i_theta_hi,i_first_valid)
+                                    DP%BFL(3) = (1.0d0-w_theta)*whamp_curve%BFL(3,i_theta_lo,i_first_valid) + &
+                                                w_theta*whamp_curve%BFL(3,i_theta_hi,i_first_valid)
                                     found = .true.
                                 end if
                             end if
@@ -344,11 +391,12 @@ implicit none
                         block
                             real*8          :: n2_targeted, dw_targeted
                             complex(kind=8) :: EFL_targeted(3)
+                            complex(kind=8) :: BFL_targeted(3)
                             logical         :: valid_targeted
                             call get_whamp_point(whamp_curve%fce_khz, whamp_curve%fpe_khz, &
                                                 theta, abs(k_vec), root_omega, &
                                                 n2_targeted, dw_targeted, EFL_targeted, &
-                                                valid_targeted)
+                                                BFL_targeted, valid_targeted)
                             if (valid_targeted) then
                                 n_ref_ind2 = n2_targeted
                                 dw_dk      = dw_targeted
@@ -356,6 +404,9 @@ implicit none
                                 DP%EFL(1)  = EFL_targeted(1)
                                 DP%EFL(2)  = EFL_targeted(2)
                                 DP%EFL(3)  = EFL_targeted(3)
+                                DP%BFL(1) = BFL_targeted(1)
+                                DP%BFL(2) = BFL_targeted(2)
+                                DP%BFL(3) = BFL_targeted(3)
                                 found = .true.
                             end if
                         end block
@@ -390,7 +441,7 @@ implicit none
 
               call hot_plasma_polarisation(alpha_ne, nres, &
                                           BesselF1, BesselF2, BesselF3, &
-                                          DP%EFL, phi_sq)
+                                          DP%EFL, DP%BFL, n_ref_ind2, phi_sq)
 
               hot_jacobian = (k_vec**2 / (1.0d0 + X**2)) * &
                             (1.0d0/(k_vec * dw_dk) + 1.0d0/root_omega)

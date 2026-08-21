@@ -169,6 +169,9 @@ implicit none
 
     real*8 :: t_prof_1, t_prof_2
 
+    integer :: i_theta_lo_cached, i_theta_hi_cached
+    real*8  :: w_theta_cached
+
     call cpu_time(t_prof_1)
 
     ! -------------------------------------------------------------------------
@@ -282,11 +285,14 @@ implicit none
             DP%EFL(1) = (0.0d0, 0.0d0)
             DP%EFL(2) = (0.0d0, 0.0d0)
             DP%EFL(3) = (0.0d0, 0.0d0)
+            DP%BFL(1) = (0.0d0, 0.0d0)
+            DP%BFL(2) = (0.0d0, 0.0d0)
+            DP%BFL(3) = (0.0d0, 0.0d0)
 
             ! -----------------------------------------------------------------
             ! HOT case: overwrite n_ref_ind2 and dw_dk from WHAMP curve
             ! -----------------------------------------------------------------
-            if (DispersionType == 'HOT' .and. whamp_curve%n_k > 0) then
+            if ((DispersionType == 'HOT' .or. DispersionType == 'EMIC') .and. whamp_curve%n_k > 0) then
                 block
                     integer :: i_k, i_theta_lo, i_theta_hi
                     real*8  :: w_theta, omega_lo_t, omega_hi_t
@@ -378,6 +384,24 @@ implicit none
                                                     w_theta*whamp_curve%EFL(3,i_theta_hi,i_k)) - &
                                                    ((1.0d0-w_theta)*whamp_curve%EFL(3,i_theta_lo,i_k-1) + &
                                                     w_theta*whamp_curve%EFL(3,i_theta_hi,i_k-1)) )
+                                DP%BFL(1) = (1.0d0-w_theta)*whamp_curve%BFL(1,i_theta_lo,i_k-1) + &
+                                            w_theta*whamp_curve%BFL(1,i_theta_hi,i_k-1) + &
+                                            frac*( ((1.0d0-w_theta)*whamp_curve%BFL(1,i_theta_lo,i_k) + &
+                                                    w_theta*whamp_curve%BFL(1,i_theta_hi,i_k)) - &
+                                                   ((1.0d0-w_theta)*whamp_curve%BFL(1,i_theta_lo,i_k-1) + &
+                                                    w_theta*whamp_curve%BFL(1,i_theta_hi,i_k-1)) )
+                                DP%BFL(2) = (1.0d0-w_theta)*whamp_curve%BFL(2,i_theta_lo,i_k-1) + &
+                                            w_theta*whamp_curve%BFL(2,i_theta_hi,i_k-1) + &
+                                            frac*( ((1.0d0-w_theta)*whamp_curve%BFL(2,i_theta_lo,i_k) + &
+                                                    w_theta*whamp_curve%BFL(2,i_theta_hi,i_k)) - &
+                                                   ((1.0d0-w_theta)*whamp_curve%BFL(2,i_theta_lo,i_k-1) + &
+                                                    w_theta*whamp_curve%BFL(2,i_theta_hi,i_k-1)) )
+                                DP%BFL(3) = (1.0d0-w_theta)*whamp_curve%BFL(3,i_theta_lo,i_k-1) + &
+                                            w_theta*whamp_curve%BFL(3,i_theta_hi,i_k-1) + &
+                                            frac*( ((1.0d0-w_theta)*whamp_curve%BFL(3,i_theta_lo,i_k) + &
+                                                    w_theta*whamp_curve%BFL(3,i_theta_hi,i_k)) - &
+                                                   ((1.0d0-w_theta)*whamp_curve%BFL(3,i_theta_lo,i_k-1) + &
+                                                    w_theta*whamp_curve%BFL(3,i_theta_hi,i_k-1)) )
                                 found = .true.
                                 exit
                             end if
@@ -425,6 +449,12 @@ implicit none
                                                     w_theta*whamp_curve%EFL(2,i_theta_hi,i_last_valid)
                                         DP%EFL(3) = (1.0d0-w_theta)*whamp_curve%EFL(3,i_theta_lo,i_last_valid) + &
                                                     w_theta*whamp_curve%EFL(3,i_theta_hi,i_last_valid)
+                                        DP%BFL(1) = (1.0d0-w_theta)*whamp_curve%BFL(1,i_theta_lo,i_last_valid) + &
+                                                    w_theta*whamp_curve%BFL(1,i_theta_hi,i_last_valid)
+                                        DP%BFL(2) = (1.0d0-w_theta)*whamp_curve%BFL(2,i_theta_lo,i_last_valid) + &
+                                                    w_theta*whamp_curve%BFL(2,i_theta_hi,i_last_valid)
+                                        DP%BFL(3) = (1.0d0-w_theta)*whamp_curve%BFL(3,i_theta_lo,i_last_valid) + &
+                                                    w_theta*whamp_curve%BFL(3,i_theta_hi,i_last_valid)
                                     else if (omega < omega_min_t .and. abs(omega-omega_min_t) < tol*omega_min_t) then
                                         n_ref_ind2 = (whamp_curve%k(i_first_valid)*c/omega_min_t)**2.0d0
                                         dw_dk = (1.0d0-w_theta)*whamp_curve%dw_dk(i_theta_lo,i_first_valid) + &
@@ -437,6 +467,12 @@ implicit none
                                                     w_theta*whamp_curve%EFL(2,i_theta_hi,i_first_valid)
                                         DP%EFL(3) = (1.0d0-w_theta)*whamp_curve%EFL(3,i_theta_lo,i_first_valid) + &
                                                     w_theta*whamp_curve%EFL(3,i_theta_hi,i_first_valid)
+                                        DP%BFL(1) = (1.0d0-w_theta)*whamp_curve%BFL(1,i_theta_lo,i_first_valid) + &
+                                                    w_theta*whamp_curve%BFL(1,i_theta_hi,i_first_valid)
+                                        DP%BFL(2) = (1.0d0-w_theta)*whamp_curve%BFL(2,i_theta_lo,i_first_valid) + &
+                                                    w_theta*whamp_curve%BFL(2,i_theta_hi,i_first_valid)
+                                        DP%BFL(3) = (1.0d0-w_theta)*whamp_curve%BFL(3,i_theta_lo,i_first_valid) + &
+                                                    w_theta*whamp_curve%BFL(3,i_theta_hi,i_first_valid)
                                     end if
                                 end if
                             end block
@@ -445,10 +481,11 @@ implicit none
                             block
                                 real*8 :: n2_targeted, dw_targeted
                                 complex(kind=8) :: EFL_targeted(3)
+                                complex(kind=8) :: BFL_targeted(3)
                                 logical :: valid_targeted
                                 call get_whamp_point(whamp_curve%fce_khz, whamp_curve%fpe_khz, theta, &
                                                     abs(k_vec), omega, &
-                                                    n2_targeted, dw_targeted, EFL_targeted, valid_targeted)
+                                                    n2_targeted, dw_targeted, EFL_targeted, BFL_targeted, valid_targeted)
 
                                 !if (E > 0.055d0 .and. E < 0.062d0 .and. abs(alpha_ne*180.0d0/PI - 10.0d0) < 1.0d0 &
                                 !    .and. nres == 1) then
@@ -466,6 +503,9 @@ implicit none
                                     DP%EFL(1) = EFL_targeted(1)
                                     DP%EFL(2) = EFL_targeted(2)
                                     DP%EFL(3) = EFL_targeted(3)
+                                    DP%BFL(1) = BFL_targeted(1)
+                                    DP%BFL(2) = BFL_targeted(2)
+                                    DP%BFL(3) = BFL_targeted(3)
                                     found = .true.
                                 end if
                             end block
@@ -485,22 +525,50 @@ implicit none
                             cycle
                         end if
                     end block
+                    block
+                    real*8 :: n2_cold_check, reldiff_interp
+                    character(len=48) :: interp_debug_filename
+
+                    call cold_plasma_refractive_index(omega, theta, DP%P, DP%S, DP%R, DP%L, &
+                                                    n2_cold_check)
+                    if (n2_cold_check /= 0.0d0) then
+                        reldiff_interp = abs(n_ref_ind2 - n2_cold_check) / abs(n2_cold_check)
+                    else
+                        reldiff_interp = -1.0d0
+                    end if
+
                 end block
-            end if
+
+                ! Cache theta-bracket indices/weight before they go out of scope,
+                ! so the Fsq diagnostic further down can reference them
+                i_theta_lo_cached = i_theta_lo
+                i_theta_hi_cached = i_theta_hi
+                w_theta_cached    = w_theta
+                end block
+
+            end if   ! closes the outer HOT/EMIC interpolation block
+
+            DP%n_ref_ind2 = n_ref_ind2
+
+            !if (trim(DispersionType) == 'HOT' .or. trim(DispersionType) == 'EMIC') then
+            !    if (n_ref_ind2 > N_max_hot**2) then
+            !        cycle
+            !    end if
+            !end if
 
             ! -----------------------------------------------------------------
             ! Resonance cone check
             ! -----------------------------------------------------------------
             res_cone      = 'N'
             theta_max_eff = theta_max   ! degrees
+            theta_cone    = -1.0d0
 
-            if (trim(DispersionType) /= 'HOT') then
+            if (trim(DispersionType) == 'COLD' .or. trim(DispersionType) == 'HOT') then
                 if (DP%P / DP%S < 0) then
-                    theta_cone = atan(sqrt(-DP%P / DP%S)) * 180.0 / PI   ! degrees
+                    theta_cone = atan(sqrt(-DP%P / DP%S)) * 180.0 / PI
 
                     if (theta_cone*0.9 < theta_max .and. theta_cone*0.99 > theta_max) then
                         res_cone = 'Y'
-
                     else if (theta_cone*0.99 <= theta_max) then
                         theta_max_eff = theta_cone * 0.99
                         res_cone = 'Y'
@@ -524,6 +592,38 @@ implicit none
             call Get_polarisation_factor(alpha_ne, nres, theta, k_vec, omega, &
                                          BesselF1, BesselF2, BesselF3, &
                                          DP, Fsq)
+
+            if (trim(DispersionType) == 'HOT' .or. trim(DispersionType) == 'EMIC') then
+                block
+                    real*8 :: n2_cold_local, Fsq_cold_equiv, reldiff_fsq
+                    real*8 :: sin2_theta_kE, E_norm_sq_check, B_norm_sq_check
+                    character(len=48) :: fsq_debug_filename
+                    real*8, parameter :: whamp_V_inv2 = 299.7925d0 * 299.7925d0
+
+                    call cold_plasma_refractive_index(omega, theta, DP%P, DP%S, DP%R, DP%L, &
+                                                       n2_cold_local)
+                    call cold_plasma_polarisation(alpha_ne, nres, theta, k_vec, omega, &
+                                                  BesselF1, BesselF2, BesselF3, &
+                                                  n2_cold_local, DP%R, DP%L, DP%P, DP%S, &
+                                                  Fsq_cold_equiv)
+
+
+                    E_norm_sq_check = real(DP%EFL(1)*conjg(DP%EFL(1)) + DP%EFL(2)*conjg(DP%EFL(2)) + DP%EFL(3)*conjg(DP%EFL(3)))
+                    B_norm_sq_check = real(DP%BFL(1)*conjg(DP%BFL(1)) + DP%BFL(2)*conjg(DP%BFL(2)) + DP%BFL(3)*conjg(DP%BFL(3)))
+                    if (n_ref_ind2 > 0.0d0 .and. E_norm_sq_check > 0.0d0) then
+                        sin2_theta_kE = (B_norm_sq_check * whamp_V_inv2) / (n_ref_ind2 * E_norm_sq_check)
+                    else
+                        sin2_theta_kE = -1.0d0
+                    end if
+
+                    if (Fsq_cold_equiv /= 0.0d0) then
+                        reldiff_fsq = abs(Fsq - Fsq_cold_equiv) / abs(Fsq_cold_equiv)
+                    else
+                        reldiff_fsq = -1.0d0
+                    end if
+
+                end block
+            end if
 
             !if (E > 1.9d0 .and. E < 2.0d0 .and. abs(alpha_ne*180.0d0/PI - 10.0d0) < 1.0d0 &
             !    .and. abs(lambda*180.0d0/PI) < 0.5d0 .and. nres == -1) then

@@ -112,7 +112,7 @@ implicit none
   BavRate(3) = 0.0
 
   ! Shared curves only valid for nres/=0 (nint grid); nres=0 uses nint_zero_res
-  use_shared = (DispersionType == 'HOT' .and. nres /= 0 .and. &
+  use_shared = ((DispersionType == 'HOT' .or. DispersionType == 'EMIC') .and. nres /= 0 .and. &
                 n_lambda_in == nint_tmp+1 .and. size(whamp_curves) == nint_tmp+1)
 
   if (delta_lambda > 0.0) then
@@ -147,7 +147,7 @@ implicit none
     ! -------------------------------------------------------------------------
     do j = 1, nint_tmp+1
         lambda = lambda_min + delta_lambda * real(j-1)
-        if (DispersionType == 'HOT') then
+        if (DispersionType == 'HOT' .or. DispersionType == 'EMIC') then
             if (use_shared) then
                 ! Direct lookup - lambda grids match exactly by construction
                 jmatch = j

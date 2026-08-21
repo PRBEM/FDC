@@ -41,6 +41,15 @@
 !        DenValue       - Density model parameter
 !        DenLatIndex    - Density latitude dependence index
 !
+!      Hot plasma (WHAMP) species (required when DispersionType='HOT'):
+!        n_hot_species          - Number of plasma species configured
+!        hot_species_mass       - ASS value per species (0=e-, 1=H+, 4=He+, 16=O+)
+!        hot_species_density_frac - Density fraction of ne_total, per species
+!        hot_species_T_par_keV  - Parallel temperature [keV], per species
+!        hot_species_T_anis     - T_perp/T_par anisotropy, per species
+!        k_min_exp_val_input    - Lower bound of WHAMP log10(k) grid
+!        k_max_exp_val_input    - Upper bound of WHAMP log10(k) grid
+!
 !      Wave frequency spectrum:
 !        FreqUnit       - Frequency unit ('Hz' or 'rad/s')
 !        FreqDistribution - Spectral shape ('Gaussian', etc.)
@@ -101,6 +110,17 @@ real*8::DenValue,DenLatIndex
 
 character(len=30)::DispersionType
 
+! Hot plasma (WHAMP) species configuration. Required when DispersionType='HOT';
+! populated from the input file in main.f90 (no default -- see there).
+integer, parameter :: max_hot_species = 10   ! matches comin's ASS/TA/AA/DN/DD sizing
+integer :: n_hot_species
+real*8  :: hot_species_mass(max_hot_species)         ! ASS value: 0=electron, 1=H+, 4=He+, 16=O+
+real*8  :: hot_species_density_frac(max_hot_species) ! fraction of ne_total, per species
+real*8  :: hot_species_T_par_keV(max_hot_species)
+real*8  :: hot_species_T_anis(max_hot_species)       ! T_perp/T_par
+real*8  :: k_min_exp_val_input
+real*8  :: k_max_exp_val_input
+
 character(len=30)::FreqUnit
 character(len=30)::FreqDistribution
 real*8::omega_m_per,d_omega_per,o_lc,o_uc
@@ -109,6 +129,7 @@ integer::nint,nint_zero_res,nint_X,nint_N,nint_N_res_cone
 
 integer, parameter :: WHAMP_N_K = 80  ! number of k points in WHAMP dispersion curve
 integer, parameter :: WHAMP_N_THETA = 20  ! theta points in WHAMP dispersion surface
+real*8, parameter :: N_max_hot = 150.0d0   ! test value; Li et al. 2014 range: 130-280
 
 real*8::lam_min,lam_max
 

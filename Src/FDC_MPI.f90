@@ -84,7 +84,7 @@ use constants
 implicit none
 
     character(len=100) :: Input_file, filename2, char_tmp
-    integer :: i, ios_diff_formulation
+    integer :: i, ios_diff_formulation, ios_hot_params
     real*8  :: mag
 
     call cpu_time(time_start)
@@ -276,7 +276,8 @@ implicit none
                   "'omega_lc/Omega_e=' f7.2,1X ',' 1X " // &
                   "'omega_uc/Omega_e=' f7.2,1X)") omega_m_per, d_omega_per, o_lc, o_uc
         case('NBBLBC', 'NBBUBC', '2016HISS', '2017CHORUS', &
-             '2018LBCHORUS', '2018UBCHORUS', '2026LBCHORUS', '2026UBCHORUS')
+             '2018LBCHORUS', '2018UBCHORUS', '2026LBCHORUS', '2026UBCHORUS', &
+             'EMIC_HBAND', 'EMIC_HEBAND', 'EMIC_OBAND')
             write(unit_log,"('Frequency unit type:'4X,A20)") FreqUnit
         case default
             write(unit_log,"('Invalid Frequency Unit.'4x,A10)") FreqUnit
@@ -350,7 +351,7 @@ implicit none
     read(unit_input,*) DispersionType
     DispersionType = trim(DispersionType)
     select case(DispersionType)
-        case('COLD', 'HOT')
+        case('COLD', 'HOT', 'EMIC')
             write(unit_log,"('Dispersion type:'4x,A10)") DispersionType
         case default
             write(unit_log,"('Invalid Dispersion Type:' 4x, A10)") DispersionType
@@ -389,6 +390,55 @@ implicit none
                     stop
             end select
         end if
+    end if
+
+    ! Hot plasma (WHAMP) species parameters: required when DispersionType='HOT'.
+    if (trim(DispersionType) == 'HOT') then
+        read(unit_input, *, iostat=ios_hot_params) char_tmp
+        if (ios_hot_params /= 0) then
+            write(unit_log,"('ERROR: DispersionType=HOT requires a Hot plasma " // &
+                  "species block in the input file, but none was found.')")
+            write(*,*) 'ERROR: DispersionType=HOT requires a Hot plasma species ' // &
+                        'block in the input file, but none was found.'
+            stop
+        end if
+
+        read(unit_input, *, iostat=ios_hot_params) &
+             k_min_exp_val_input, k_max_exp_val_input, n_hot_species
+        if (ios_hot_params /= 0) then
+            write(unit_log,"('ERROR: Malformed Hot plasma species header line.')")
+            write(*,*) 'ERROR: Malformed Hot plasma species header line ' // &
+                        '(expected: k_min_exp, k_max_exp, n_species).'
+            stop
+        end if
+
+        if (n_hot_species < 1 .or. n_hot_species > max_hot_species) then
+            write(unit_log,"('ERROR: n_hot_species=' I4 ' out of valid range [1,' I3 '].')") &
+                  n_hot_species, max_hot_species
+            write(*,*) 'ERROR: n_hot_species out of valid range.'
+            stop
+        end if
+
+        write(unit_log,"('k_min_exp=' f6.2, ' k_max_exp=' f6.2, ' n_species=' I3)") &
+              k_min_exp_val_input, k_max_exp_val_input, n_hot_species
+
+        do i = 1, n_hot_species
+            read(unit_input, *, iostat=ios_hot_params) char_tmp   ! comment line
+            if (ios_hot_params == 0) then
+                read(unit_input, *, iostat=ios_hot_params) &
+                     hot_species_mass(i), hot_species_density_frac(i), &
+                     hot_species_T_par_keV(i), hot_species_T_anis(i)
+            end if
+            if (ios_hot_params /= 0) then
+                write(unit_log,"('ERROR: Malformed Hot plasma species block at species' I3)") i
+                write(*,*) 'ERROR: Malformed Hot plasma species block at species', i
+                stop
+            end if
+            write(unit_log,"('  Species' I2 ': mass=' f6.2 ' frac=' f8.4 " // &
+                  "' T_par=' f8.3 'keV T_anis=' f6.2)") &
+                  i, hot_species_mass(i), hot_species_density_frac(i), &
+                  hot_species_T_par_keV(i), hot_species_T_anis(i)
+        end do
     end if
 
     close(unit_input)

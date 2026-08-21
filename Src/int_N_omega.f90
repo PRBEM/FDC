@@ -135,6 +135,12 @@ implicit none
 
     step = (theta_max - theta_min) / 180.0 * PI / (real(nint_N_tmp) - 1.0)
 
+    ! Parallel-only (delta-function angle distribution)
+    if ((theta_max - theta_min) < 1.0d-10) then
+        N_of_omega = 1.0d0
+        return
+    end if
+
     ! -------------------------------------------------------------------------
     ! Trapezoidal integration over theta
     ! -------------------------------------------------------------------------
@@ -164,7 +170,7 @@ implicit none
         X     = tan(theta)
 
         ! HOT case: interpolate n_ref_ind2 and dw_dk from WHAMP curve
-       if (DispersionType == 'HOT' .and. whamp_curve%n_k > 0) then
+        if ((DispersionType == 'HOT' .or. DispersionType == 'EMIC') .and. whamp_curve%n_k > 0) then
             block
                 integer :: i_k, i_theta_lo, i_theta_hi, i_s
                 real*8  :: w_theta, omega_lo_t, omega_hi_t, frac
@@ -285,11 +291,12 @@ implicit none
                     block
                         real*8          :: n2_targeted, dw_targeted
                         complex(kind=8) :: EFL_targeted(3)
+                        complex(kind=8) :: BFL_targeted(3)
                         logical         :: valid_targeted
                         call get_whamp_point(whamp_curve%fce_khz, whamp_curve%fpe_khz, &
                                             theta, abs(k_vec_res), omega, &
                                             n2_targeted, dw_targeted, EFL_targeted, &
-                                            valid_targeted)
+                                            BFL_targeted, valid_targeted)
                         if (valid_targeted) then
                             DP%n_ref_ind2 = n2_targeted
                             DP%dw_dk      = dw_targeted

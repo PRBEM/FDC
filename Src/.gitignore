@@ -13,3 +13,9 @@ main_*
 
 # Editor/scratch
 Untitled-*
+
+# Untracked folders
+helper_functions/
+Inputs/
+Outputs/
+plot_results/

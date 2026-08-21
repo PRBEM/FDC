@@ -115,7 +115,7 @@ implicit none
         E        = InputData2(i,2) * 1.0e3 * qe / (me*c*c)
         alpha_eq = InputData2(i,3) * RAD
 
-        if (DispersionType == 'HOT') then
+        if (DispersionType == 'HOT' .or. DispersionType == 'EMIC') then
             call Lambda_mirror_new(alpha_eq, lambda_m_shared)
             call B_field(L, lambda_m_shared, B_m_shared)
             lambda_min_shared = lam_min * RAD
