@@ -190,6 +190,24 @@ implicit none
          .and. (nres == 0)
     if (intn_log) intn_call = intn_call + 1
 
+#ifndef INTN_ORIG
+    ! Fast cold path (int_N_cold_fast.f90). The loop below is still used for
+    ! HOT/EMIC, with -DINTN_ORIG, and while the intn diagnostics are active.
+    if (DispersionType == 'COLD' .and. .not. intn_log) then
+        call int_N_cold_fast(omega, theta_min / 180.0 * PI, step, nint_N_tmp, &
+                             X_m1, X_w1, X_m2, X_w2, theta_q, &
+                             R_stix, L_stix, P_stix, S_stix, &
+                             dPdw_stix, dSdw_stix, dRdw_stix, dLdw_stix, &
+                             c, N_of_omega)
+#ifdef PROFILE
+        call system_clock(t_prof_2, prof_rate)
+        t_intn_total = t_intn_total + real(t_prof_2 - t_prof_1, 8) / real(prof_rate, 8)
+        n_intn_calls = n_intn_calls + 1
+#endif
+        return
+    end if
+#endif
+
     do i = 1, nint_N_tmp
         theta = theta_min / 180.0 * PI + step * (real(i) - 1.0)
         X     = tan(theta)
