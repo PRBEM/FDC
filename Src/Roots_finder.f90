@@ -301,7 +301,7 @@ implicit none
     ! Written to module variables (a1-a6) for subsequent use in WeightFunction.
     ! Also used locally below as inputs to the polynomial coefficients a7-a16.
     ! -------------------------------------------------------------------------
-#ifdef ROOTS_SCAN
+#if !defined(ROOTS_POLY) && !defined(ROOTCHECK)
     b1 = real(nres)*real(sqe)*omega_e / gamma1
     b2 = 1.0 / (betta*cos(alpha_ne)*cos(theta))
     call roots_scan_cold(b1, b2, theta, omega_e, omega_pe, omega_i, omega_pi, &
