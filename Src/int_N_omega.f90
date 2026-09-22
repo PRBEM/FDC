@@ -102,7 +102,7 @@ implicit none
     real*8 :: R_stix, L_stix, P_stix, S_stix, D_stix
     real*8 :: dPdw_stix, dSdw_stix, dRdw_stix, dLdw_stix
 
-    real*8 :: t_prof_1, t_prof_2
+    integer(8) :: t_prof_1, t_prof_2, prof_rate
 
     integer, save :: call_count = 0
     integer, save :: n_debug_writes = 0
@@ -117,7 +117,7 @@ implicit none
     real*8            :: intn_dwdk, intn_n2
 
 #ifdef PROFILE
-    call cpu_time(t_prof_1)
+    call system_clock(t_prof_1)
 #endif
 
     if (my_rank_cached < 0) then
@@ -435,8 +435,8 @@ implicit none
 
     N_of_omega = N_of_omega * step
 #ifdef PROFILE
-    call cpu_time(t_prof_2)
-    t_intn_total = t_intn_total + (t_prof_2 - t_prof_1)
+    call system_clock(t_prof_2, prof_rate)
+    t_intn_total = t_intn_total + real(t_prof_2 - t_prof_1, 8) / real(prof_rate, 8)
     n_intn_calls = n_intn_calls + 1
 #endif
     return

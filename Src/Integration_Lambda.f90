@@ -97,7 +97,7 @@ implicit none
   real*8 :: Ne_local, fce_khz, fpe_khz
   type(WHAMPCurve) :: curve
 
-  real*8 :: t_prof_1, t_prof_2
+  integer(8) :: t_prof_1, t_prof_2, prof_rate
 
   real*8 :: Theta_function(7)
 
@@ -118,7 +118,7 @@ implicit none
 
   if (delta_lambda > 0.0) then
 #ifdef PROFILE
-    call cpu_time(t_prof_1)
+    call system_clock(t_prof_1)
 #endif
   
     do i=1, nint_tmp+1
@@ -246,8 +246,8 @@ implicit none
     BavRate(2) = BavRate(2) * delta_lambda
     BavRate(3) = BavRate(3) * delta_lambda / 2
 #ifdef PROFILE
-    call cpu_time(t_prof_2)
-    t_intlam_total = t_intlam_total + (t_prof_2 - t_prof_1)
+    call system_clock(t_prof_2, prof_rate)
+    t_intlam_total = t_intlam_total + real(t_prof_2 - t_prof_1, 8) / real(prof_rate, 8)
     n_intlam_calls = n_intlam_calls + 1
 #endif
 end if

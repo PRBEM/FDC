@@ -122,14 +122,14 @@ implicit none
     real*8  :: w_theta
     logical :: root_found
 
-    real*8 :: t_prof_1, t_prof_2
+    integer(8) :: t_prof_1, t_prof_2, prof_rate
 
     real*8 :: f_at_zero_pos, f_at_zero_neg
     real*8 :: omega_first, k_first
     real*8 :: f_first_pos, f_first_neg
 
 #ifdef PROFILE
-    call cpu_time(t_prof_1)
+    call system_clock(t_prof_1)
 #endif
 
     betta  = sqrt(E*(E + 2.0)) / (E + 1.0)
@@ -309,8 +309,8 @@ implicit none
     if (scan_ok) then
         k_sign(1:4) = 0.0d0
 #ifdef PROFILE
-        call cpu_time(t_prof_2)
-        t_roots_total = t_roots_total + (t_prof_2 - t_prof_1)
+        call system_clock(t_prof_2, prof_rate)
+        t_roots_total = t_roots_total + real(t_prof_2 - t_prof_1, 8) / real(prof_rate, 8)
         n_roots_calls = n_roots_calls + 1
 #endif
         return
@@ -435,8 +435,8 @@ implicit none
     !end if
 
 #ifdef PROFILE
-    call cpu_time(t_prof_2)
-    t_roots_total = t_roots_total + (t_prof_2 - t_prof_1)
+    call system_clock(t_prof_2, prof_rate)
+    t_roots_total = t_roots_total + real(t_prof_2 - t_prof_1, 8) / real(prof_rate, 8)
     n_roots_calls = n_roots_calls + 1
 #endif
     return

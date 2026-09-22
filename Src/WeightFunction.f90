@@ -172,7 +172,7 @@ implicit none
     ! --- Wave normal angle normalisation ---
     real*8 :: N_of_omega
 
-    real*8 :: t_prof_1, t_prof_2
+    integer(8) :: t_prof_1, t_prof_2, prof_rate
 
     integer :: i_theta_lo_cached, i_theta_hi_cached
     real*8  :: w_theta_cached
@@ -181,7 +181,7 @@ implicit none
     integer :: mpi_ierr
 
 #ifdef PROFILE
-    call cpu_time(t_prof_1)
+    call system_clock(t_prof_1)
 #endif
 
     ! -------------------------------------------------------------------------
@@ -833,8 +833,8 @@ implicit none
 
     end do
 #ifdef PROFILE
-    call cpu_time(t_prof_2)
-    t_weight_total = t_weight_total + (t_prof_2 - t_prof_1)
+    call system_clock(t_prof_2, prof_rate)
+    t_weight_total = t_weight_total + real(t_prof_2 - t_prof_1, 8) / real(prof_rate, 8)
     n_weight_calls = n_weight_calls + 1
 #endif
     return
