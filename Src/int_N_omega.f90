@@ -74,7 +74,9 @@ subroutine int_N_omega(alpha, E, L, lambda, Theta_function, theta_max_eff, &
                        res_cone, N_of_omega, whamp_curve)
 use constants
 use dispersion
+use accounting
 implicit none
+    include "mpif.h"
 
     real*8, intent(in)  :: alpha, E, L, lambda, Theta_function(7)
     real*8, intent(in)  :: theta_max_eff, omega, k_vec_res
@@ -105,7 +107,20 @@ implicit none
     integer, save :: call_count = 0
     integer, save :: n_debug_writes = 0
 
+    integer, save :: my_rank_cached = -1
+    integer :: mpi_ierr
+
+    integer           :: intn_st, intn_path
+    integer, save     :: intn_call = 0
+    logical           :: intn_log
+    character(len=80) :: intn_file
+    real*8            :: intn_dwdk, intn_n2
+
     call cpu_time(t_prof_1)
+
+    if (my_rank_cached < 0) then
+        call MPI_Comm_rank(MPI_COMM_WORLD, my_rank_cached, mpi_ierr)
+    end if
     call_count = call_count + 1
 
     ! -------------------------------------------------------------------------
@@ -165,6 +180,14 @@ implicit none
     !    close(97)
     !end if
 
+    ! ---- diagnostic gate: one (E, alpha, lambda, nres) cell only ----
+    ! NOTE: E is dimensionless (gamma-1). 2 keV -> 0.003914
+    intn_log = (E > 0.0037d0 .and. E < 0.0041d0) &
+         .and. (abs(alpha*180.0d0/PI - 60.0d0) < 1.0d0) &
+         .and. (abs(lambda*180.0d0/PI) < 0.5d0) &
+         .and. (nres == 0)
+    if (intn_log) intn_call = intn_call + 1
+
     do i = 1, nint_N_tmp
         theta = theta_min / 180.0 * PI + step * (real(i) - 1.0)
         X     = tan(theta)
@@ -176,6 +199,9 @@ implicit none
                 real*8  :: w_theta, omega_lo_t, omega_hi_t, frac
                 logical :: found, valid_lo, valid_hi
                 found = .false.
+                intn_path = 0
+                DP%n_ref_ind2 = -1.0d0
+                DP%dw_dk      = 0.0d0
 
                 ! Find bracketing theta indices and interpolation weight
                 i_theta_lo = 1
@@ -213,7 +239,20 @@ implicit none
                                  w_theta*whamp_curve%omega(i_theta_hi,i_k-1)
                     omega_hi_t = (1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,i_k)   + &
                                  w_theta*whamp_curve%omega(i_theta_hi,i_k)
-                    if (omega_lo_t <= omega .and. omega_hi_t >= omega) then
+                    if ((omega_lo_t - omega) * (omega_hi_t - omega) <= 0.0d0) then
+                        !if (intn_log .and. theta*180.0d0/PI > 8.0d0) then
+                        !    block
+                        !        character(len=64) :: probe_file
+                        !        write(probe_file,'(A,I0,A)') 'bracket_probe_rank', &
+                        !                                     my_rank_cached, '.txt'
+                        !        open(97, file=trim(probe_file), status='unknown', &
+                        !             position='append')
+                        !        write(97,'(I6,1X,F9.4,1X,I4,1X,I4,1X,I4,4(1X,ES16.8))') &
+                        !            intn_call, theta*180.0d0/PI, i_theta_lo, i_theta_hi, &
+                        !            i_k, omega, omega_lo_t, omega_hi_t, w_theta
+                        !        close(97)
+                        !    end block
+                        !end if
                         frac = (omega - omega_lo_t) / (omega_hi_t - omega_lo_t)
                         DP%n_ref_ind2 = (whamp_curve%k(i_k-1)*c/omega_lo_t)**2.0d0 + &
                             frac*((whamp_curve%k(i_k)*c/omega_hi_t)**2.0d0 - &
@@ -228,6 +267,7 @@ implicit none
                             DP%dw_dk = -DP%dw_dk
                         end if
                         found = .true.
+                        intn_path = 1
                         if (abs(DP%dw_dk) < 1.0d-6 * c) then
                             Ntmp = 0.0d0
                             found = .false.
@@ -270,6 +310,7 @@ implicit none
                                            w_theta*whamp_curve%dw_dk(i_theta_hi,i_last_valid)
                                 if (k_vec_res < 0.0d0) DP%dw_dk = -DP%dw_dk
                                 found = .true.
+                                intn_path = 2
                                 if (abs(DP%dw_dk) < 1.0d-6 * c) then
                                     found = .false.
                                 end if
@@ -279,6 +320,7 @@ implicit none
                                            w_theta*whamp_curve%dw_dk(i_theta_hi,i_first_valid)
                                 if (k_vec_res < 0.0d0) DP%dw_dk = -DP%dw_dk
                                 found = .true.
+                                intn_path = 2
                                 if (abs(DP%dw_dk) < 1.0d-6 * c) then
                                     found = .false.
                                 end if
@@ -289,7 +331,7 @@ implicit none
 
                 if (.not. found) then
                     block
-                        real*8          :: n2_targeted, dw_targeted
+                        real*8          :: n2_targeted, dw_targeted, omega_found
                         complex(kind=8) :: EFL_targeted(3)
                         complex(kind=8) :: BFL_targeted(3)
                         logical         :: valid_targeted
@@ -297,25 +339,36 @@ implicit none
                                             theta, abs(k_vec_res), omega, &
                                             n2_targeted, dw_targeted, EFL_targeted, &
                                             BFL_targeted, valid_targeted)
-                        if (valid_targeted) then
-                            DP%n_ref_ind2 = n2_targeted
-                            DP%dw_dk      = dw_targeted
-                            if (k_vec_res < 0.0d0) DP%dw_dk = -DP%dw_dk
-                            found = .true.
+                        if (valid_targeted .and. n2_targeted > 0.0d0) then
+                            omega_found = abs(k_vec_res) * c / sqrt(n2_targeted)
+                            if (abs(omega_found - omega) <= 1.0d-3 * omega) then
+                                DP%n_ref_ind2 = n2_targeted
+                                DP%dw_dk      = dw_targeted
+                                if (k_vec_res < 0.0d0) DP%dw_dk = -DP%dw_dk
+                                found = .true.
+                                intn_path = 3
+                            end if
                         end if
                     end block
                 end if
 
+                if (.not. found) intn_path = 0
+
                 if (.not. found) then
                     Ntmp = 0.0d0
+                    intn_st = 1
                 else if (DP%n_ref_ind2 <= 0.0d0 .or. abs(DP%dw_dk) < 1.0d-6 * c) then
                     Ntmp = 0.0d0
+                    intn_st = 2
                 else
                     Ntmp = sin(theta) &
                         * (exp(-((X - X_m1)/X_w1)**2.0) &
                             + theta_q * exp(-((X - X_m2)/X_w2)**2.0)) &
                         * DP%n_ref_ind2 * c / abs(DP%dw_dk)
+                    intn_st = 0
                 end if
+                intn_n2   = DP%n_ref_ind2
+                intn_dwdk = DP%dw_dk
             end block
 
         else
@@ -325,6 +378,9 @@ implicit none
                                               DP%n_ref_ind2)
             if (DP%n_ref_ind2 < 0.0) then
                 Ntmp = 0.0
+                intn_st = 3
+                intn_n2 = DP%n_ref_ind2
+                intn_dwdk = 0.0d0
             else
                 k_vec = sqrt(DP%n_ref_ind2) * omega / c
                 block
@@ -348,8 +404,24 @@ implicit none
                        * (exp(-((X - X_m1)/X_w1)**2.0) &
                           + theta_q * exp(-((X - X_m2)/X_w2)**2.0)) &
                        * DP%n_ref_ind2 * c / abs(DP%dw_dk)
+                intn_st   = 0
+                intn_path = 9
+                intn_n2   = DP%n_ref_ind2
+                intn_dwdk = DP%dw_dk
             end if
         end if
+
+        !if (intn_log) then
+        !    write(intn_file,'(A,A,A,I0,A)') 'intn_', trim(DispersionType), &
+        !                                    '_rank', my_rank_cached, '.txt'
+        !    open(98, file=trim(intn_file), status='unknown', position='append')
+        !    write(98,'(I6,1X,I5,1X,I2,1X,I2,1X,I4,1X,I2,5(1X,F11.5),4(1X,ES15.7))') &
+        !        intn_call, i, intn_st, intn_path, nres, acct_iroot, &
+        !        alpha*180.0d0/PI, lambda*180.0d0/PI, acct_theta_res, &
+        !        theta*180.0d0/PI, theta_max, &
+        !        omega, intn_n2, intn_dwdk, Ntmp
+        !    close(98)
+        !end if
 
         ! Trapezoidal weights
         if (i == 1 .or. i == nint_N_tmp) then
@@ -360,11 +432,9 @@ implicit none
     end do
 
     N_of_omega = N_of_omega * step
-
     call cpu_time(t_prof_2)
     t_intn_total = t_intn_total + (t_prof_2 - t_prof_1)
     n_intn_calls = n_intn_calls + 1
-
     return
 
 end subroutine int_N_omega

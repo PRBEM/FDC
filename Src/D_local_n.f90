@@ -64,17 +64,17 @@ subroutine D_local_n(alpha, E, L, nres, lambda, Bw, Theta_function, DDN, whamp_c
 use constants
 use dispersion
 implicit none
-
+ 
     real*8,intent(in) :: alpha, E, L, lambda, Bw, Theta_function(7)
     integer,intent(in) :: nres
     real*8,intent(out) :: DDN(3)
     type(WHAMPCurve), intent(in) :: whamp_curve
-
+ 
     real*8 :: WeightValue(3)
     real*8 :: theta_min, theta_max, theta
     real*8 :: BB1, BB2, BB3
     integer :: i
-
+ 
     ! --- CUNNINGHAM path: pre-loop setup variables ---
     real*8  :: Ne_local, B_local, B_eq, lambda_eq
     real*8  :: omega_e, omega_e_eq, omega_i, omega_pe, omega_pi
@@ -96,19 +96,19 @@ implicit none
     real*8  :: argJ, BesselF1, BesselF2, BesselF3
     real*8  :: hot_jacobian
     type(DispersionProperties) :: DP
-
-
+ 
+ 
     theta_min = Theta_function(5)
     theta_max = Theta_function(6)
-
+ 
     BB1 = (theta_max  -theta_min) * RAD
     BB2 = 1.0 / (real(nint_X) - 1.0)
     BB3 = BB1 * BB2
-
+ 
     DDN(1) = 0.0
     DDN(2) = 0.0
     DDN(3) = 0.0
-
+ 
     ! Parallel-only (delta-function angle distribution)
     if ((theta_max - theta_min) < 1.0d-10) then
         block
@@ -121,77 +121,76 @@ implicit none
         end block
         return
     end if
-
+ 
     if (trim(DiffusionFormulation) == 'CUNNINGHAM') then
-
+ 
       theta_m1 = Theta_function(1)
       theta_w1 = Theta_function(2)
       theta_m2 = Theta_function(3)
       theta_w2 = Theta_function(4)
       theta_q  = Theta_function(7)
-
+ 
       X_m1 = tan(theta_m1/180.0d0*PI)
       X_w1 = tan(theta_w1/180.0d0*PI)
       X_m2 = tan(theta_m2/180.0d0*PI)
       X_w2 = tan(theta_w2/180.0d0*PI)
-
-
+ 
+ 
       ! Local plasma state (same calls as WeightFunction)
       call Local_alpha(alpha, lambda, alpha_ne)
       call ElectronDensity(L, lambda, Ne_local)
-
+ 
       lambda_eq = 0.0d0
       call B_field(L, lambda,    B_local)
       call B_field(L, lambda_eq, B_eq)
-
+ 
       omega_e    = qe * B_local / me
       omega_e_eq = qe * B_eq    / me
       omega_i    = omega_e * me / mi
       omega_pe   = sqrt(Ne_local * qe * qe / (C0 * me))
       omega_pi   = omega_pe * sqrt(me / mi)
-
+ 
       omega_m  = 0.0d0
       d_omega  = 0.0d0
       omega_lc = 0.0d0
       omega_uc = 0.0d0
       call Freq_Spectral(L, lambda, omega_e_eq, omega_m, d_omega, omega_lc, omega_uc)
-
+ 
       ! Particle state
       betta  = sqrt(E*(E + 2.0d0)) / (E + 1.0d0)
       gamma1 = E + 1.0d0
       p      = me * c * sqrt((E + 1.0d0)**2.0d0 - 1.0d0)
       vpar   = p / gamma1 / me * cos(alpha_ne)
       p_perp = p * sin(alpha_ne)
-
+ 
       ! Resonance condition term b1 = nres*sqe*omega_e/gamma1
       b1 = real(nres, 8) * real(sqe, 8) * omega_e / gamma1
-
+ 
       ! g(X) normalization integral (once for this lambda, not per theta/root)
       call gX_normalization_integral(X_m1, X_w1, X_m2, X_w2, theta_q, &
                                       tan(theta_min/180.0d0*PI), &
                                       tan(theta_max/180.0d0*PI), &
                                       nint_X, integral_gX)
-
+ 
     end if  
-
+ 
     do i = 1, nint_X
       theta = theta_min / 180.0 * PI + (real(i) - 1.0) * BB3
       
       WeightValue(1) = 0.0
       WeightValue(2) = 0.0
       WeightValue(3) = 0.0
-
+ 
       if (trim(DiffusionFormulation) /= 'CUNNINGHAM') then
         call WeightFunction(alpha, E, L, lambda, Bw, Theta_function, nres, theta, &
                             WeightValue, whamp_curve)
-
+ 
       else
         X = tan(theta)
-        ! Unnormalised g(X) at this theta (same definition as in int_N_omega's Ntmp)
-        gX_raw = exp(-((X - X_m1)/X_w1)**2.0d0) &
-                  + theta_q * exp(-((X - X_m2)/X_w2)**2.0d0)
-
-
+        gX_raw = X * ( exp(-((X - X_m1)/X_w1)**2.0d0) &
+                  + theta_q * exp(-((X - X_m2)/X_w2)**2.0d0) )
+ 
+ 
         ! Resonant frequencies at this theta
         roots = 0.0d0
         k_sign = 0.0d0
@@ -199,21 +198,21 @@ implicit none
                           omega_e, omega_pe, omega_i, omega_pi, &
                           omega_lc, omega_uc, &
                           roots, whamp_curve, k_sign)
-
+ 
         DnXaa = 0.0d0
         DnXap = 0.0d0
         DnXpp = 0.0d0
-
+ 
         do j = 1, 4
-
+ 
             root_omega = roots(j)
-
+ 
             if (root_omega == 0.0d0) cycle
             ! Skip roots below lower hybrid (same check as WeightFunction)
             if (root_omega <= sqrt((omega_pe/omega_e)**2.0d0 + 1.0d0)) cycle
-
+ 
             if (trim(DispersionType) == 'HOT' .or. trim(DispersionType) == 'EMIC') then
-
+ 
                 ! Initialize
                 n_ref_ind2 = 0.0d0
                 dw_dk      = 0.0d0
@@ -224,15 +223,15 @@ implicit none
                 DP%BFL(1) = (0.0d0, 0.0d0)
                 DP%BFL(2) = (0.0d0, 0.0d0)
                 DP%BFL(3) = (0.0d0, 0.0d0)
-
-
+ 
+ 
               if (whamp_curve%n_k > 0) then
                 block
                     integer :: i_k, i_theta_lo, i_theta_hi
                     real*8  :: w_theta, omega_lo_t, omega_hi_t
                     real*8  :: frac, n2_lo, n2_hi, dw_lo, dw_hi
                     logical :: valid_lo, valid_hi, found
-
+ 
                     ! Find bracketing theta indices
                     i_theta_lo = 1; i_theta_hi = 1; w_theta = 0.0d0
                     if (whamp_curve%n_theta > 1) then
@@ -255,7 +254,7 @@ implicit none
                             end do
                         end if
                     end if
-
+ 
                     ! Find bracketing k by interpolated omega
                     found = .false.
                     do i_k = 2, whamp_curve%n_k
@@ -264,12 +263,12 @@ implicit none
                         valid_hi = whamp_curve%valid(i_theta_hi, i_k) .and. &
                                   whamp_curve%valid(i_theta_hi, i_k-1)
                         if (.not. valid_lo .or. .not. valid_hi) cycle
-
+ 
                         omega_lo_t = (1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,i_k-1) + &
                                       w_theta*whamp_curve%omega(i_theta_hi,i_k-1)
                         omega_hi_t = (1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,i_k) + &
                                       w_theta*whamp_curve%omega(i_theta_hi,i_k)
-
+ 
                         if (omega_lo_t <= root_omega .and. omega_hi_t >= root_omega) then
                             frac  = (root_omega - omega_lo_t) / (omega_hi_t - omega_lo_t)
                             n2_lo = (whamp_curve%k(i_k-1) * c / omega_lo_t)**2.0d0
@@ -321,7 +320,7 @@ implicit none
                             exit
                         end if
                     end do
-
+ 
                     ! Tolerance fallback: nearest valid endpoint
                     if (.not. found) then
                         block
@@ -385,7 +384,7 @@ implicit none
                             end if
                         end block
                     end if
-
+ 
                     ! Targeted rescue via get_whamp_point
                     if (.not. found) then
                         block
@@ -411,119 +410,119 @@ implicit none
                             end if
                         end block
                     end if
-
+ 
                     if (.not. found) cycle   ! no valid WHAMP data at this point
-
+ 
                 end block
               end if   ! whamp_curve%n_k > 0
-
+ 
               if (n_ref_ind2 <= 0.0d0) cycle
               if (abs(dw_dk)  < 1.0d-99) cycle
-
+ 
               k_vec  = sqrt(n_ref_ind2) * root_omega / c
               k_par  = k_sign(j) * k_vec * cos(theta)
               k_perp = k_vec * sin(theta)
-
+ 
               if (k_perp < 1.0d-30 .and. abs(nres) > 1) cycle
-
+ 
               if (k_par >= 0.0d0) then
                   sterm = vpar - dw_dk / cos(theta)
               else
                   sterm = vpar + dw_dk / cos(theta)
               end if
-
+ 
               if (abs(sterm) < 1.0d-99) cycle
-
+ 
               argJ = abs(k_perp) * p_perp / (me * abs(omega_e))
               call Bessel_FirstKind(argJ, nres-1, BesselF1)
               call Bessel_FirstKind(argJ, nres,   BesselF2)
               call Bessel_FirstKind(argJ, nres+1, BesselF3)
-
-              call hot_plasma_polarisation(alpha_ne, nres, &
+ 
+              call hot_plasma_polarisation(alpha_ne, nres, k_vec, theta, &
                                           BesselF1, BesselF2, BesselF3, &
                                           DP%EFL, DP%BFL, n_ref_ind2, phi_sq)
-
+ 
               hot_jacobian = (k_vec**2 / (1.0d0 + X**2)) * &
-                            (1.0d0/(k_vec * dw_dk) + 1.0d0/root_omega)
+                            (1.0d0/(k_vec * dw_dk) - 1.0d0/root_omega)
               norm_factor = k_vec * X * abs(hot_jacobian) / (2.0d0*PI**2 * sqrt(1.0d0 + X**2))
-
-
+ 
+ 
             else
-
+ 
               ! Stix parameters at this root
               call cold_plasma_parameters(root_omega, omega_e, omega_pe, &
                                           omega_i, omega_pi, &
                                           stix_R, stix_L, stix_P, stix_S, stix_D)
-
+ 
               ! Refractive index squared (k_vec=0 since unused internally)
               call cold_plasma_refractive_index(root_omega, theta, &
                                                 stix_P, stix_S, stix_R, stix_L, mu2)
-
+ 
               if (mu2 <= 0.0d0) cycle
-
+ 
               k_vec = sqrt(mu2) * root_omega / c
               k_par = (root_omega - b1) / vpar
               k_perp = k_vec * sin(theta)
-
+ 
               if (k_perp < 1.0d-30 .and. abs(nres) > 1) cycle
               ! Dispersion derivatives
               call dD_dk_dD_dw_cunningham(root_omega, theta, k_vec, mu2, &
                                           stix_R, stix_L, stix_P, stix_S, &
                                           omega_e, omega_pe, omega_i, omega_pi, &
                                           dD_dk, dD_dw)
-
+ 
               if (abs(dD_dw) < 1.0d-99) cycle
-
+ 
               if (k_par >= 0.0d0) then
                   sterm = vpar + (dD_dk/dD_dw)*sqrt(1.0d0 + X**2.0d0)
               else
                   sterm = vpar - (dD_dk/dD_dw)*sqrt(1.0d0 + X**2.0d0)
               end if
-
+ 
               if (abs(sterm) < 1.0d-99) cycle
-
+ 
               ! Phi squared (gyroresonance coupling factor)
               call phi_squared_cunningham(theta, k_par, k_perp, mu2, &
                                           stix_R, stix_L, stix_P, stix_S, &
                                           p_perp, alpha_ne, omega_e, nres, &
                                           phi_sq)
-
+ 
               call cunningham_jacobian(root_omega, k_vec, theta, mu2, &
                                       stix_R, stix_L, stix_P, stix_S, &
                                       omega_e, omega_pe, omega_i, omega_pi, &
                                       norm_factor)
-
+ 
               norm_factor = k_vec * X * abs(norm_factor) / (2.0d0*PI**2 * sqrt(1.0d0 + X**2))
-
+ 
             end if
-
+ 
             if (norm_factor < 1.0d-99) cycle
-
+ 
             ! Normalised power spectral density
             call PowerSpectralDensity(L, lambda, omega_e_eq, root_omega, &
                                       omega_m, omega_lc, omega_uc, d_omega, &
                                       PSD)
-
+ 
             ! Normalised intensity = Bw^2 * PSD * g(X)/integral_gX / norm_factor
             call get_normalised_intensity_cunningham(Bw, PSD, gX_raw, &
                                                       integral_gX, norm_factor, &
                                                       norm_intensity)
-
+ 
             ! DnX at this root
             term1 = (qe**2.0 * root_omega**2.0) / (4.0*PI*(1.0 + X**2.0) * p**2.0)
             term2 = (b1/root_omega - sin(alpha_ne)**2.0) / cos(alpha_ne)
             term3 = norm_intensity * phi_sq / abs(sterm)
-
+ 
             DnXaa = DnXaa + term1 * term2**2.0 * term3
             DnXap = DnXap + term1 * term2**2.0 * term3 * sin(alpha_ne)/term2
             DnXpp = DnXpp + term1 * term2**2.0 * term3 * (sin(alpha_ne)/term2)**2.0
-
+ 
         end do   ! root loop
-
+ 
         WeightValue(1) = DnXaa
         WeightValue(2) = DnXap
         WeightValue(3) = DnXpp
-
+ 
       end if  
                           
       WeightValue(1:3) = WeightValue(1:3) * sin(theta)
@@ -540,5 +539,5 @@ implicit none
     end do
     
     DDN(1:3)=DDN(1:3)*BB3
-
+ 
 end subroutine D_local_n

@@ -123,32 +123,33 @@ implicit none
     real*8, intent(in)  :: R, L, P, S
     real*8, intent(in)  :: omega_e, omega_pe, omega_i, omega_pi
     real*8, intent(out) :: dD_dk, dD_dw
-
+ 
     real*8 :: sin2, cos2
     real*8 :: A_, B_
     real*8 :: dPdw, dSdw, dRdw, dLdw
     real*8 :: dA_, dB_, dC_
     real*8 :: mu4
-
+ 
     sin2 = sin(theta)**2.0
     cos2 = cos(theta)**2.0
     mu4  = mu2**2.0
-
+ 
     ! A, B in piran's literal sin/cos convention (NOT FDC's X^2 convention)
     A_ = S*sin2 + P*cos2
     B_ = R*L*sin2 + P*S*(2.0 + cos2)
-
+ 
     call cold_plasma_stix_derivatives(omega, omega_e, omega_pe, omega_i, omega_pi, &
                                       dPdw, dSdw, dRdw, dLdw)
-
+ 
     dA_ = dSdw*sin2 + dPdw*cos2
     dB_ = (dRdw*L + R*dLdw)*sin2 + (dPdw*S + P*dSdw)*(2.0 + cos2)
     dC_ = dPdw*R*L + P*dRdw*L + P*R*dLdw
-
+ 
     dD_dk = (2.0/k) * (2.0*A_*mu4 - B_*mu2)
     dD_dw = (dA_ - 4.0*A_/omega)*mu4 - (dB_ - 2.0*B_/omega)*mu2 + dC_
-
+ 
 end subroutine dD_dk_dD_dw_cunningham
+
 
 ! ==============================================================================
 ! SUBROUTINE: phi_squared_cunningham
@@ -200,13 +201,13 @@ implicit none
     real*8, intent(in)  :: omega_e
     integer, intent(in) :: nres
     real*8, intent(out) :: phi_sq
-
+ 
     real*8 :: sin_psi, cos_psi
     real*8 :: point, point_nm1, point_n, point_np1
     real*8 :: J_nm1, J_n, J_np1
     real*8 :: term1, term2, term3, term4, term5, term6
     real*8 :: gyrofreq_signed
-
+ 
     ! psi differs from theta by sign of cos() when k_par < 0
     sin_psi = sin(theta)
     if (k_par >= 0.0d0) then
@@ -214,28 +215,28 @@ implicit none
     else
         cos_psi = -cos(theta)
     end if
-
+ 
     gyrofreq_signed = real(sqe, 8) * omega_e
-
+ 
     point = k_perp * p_perp / (me * gyrofreq_signed)
-
+ 
     point_nm1 = point
     point_n   = point
     point_np1 = point
-
+ 
     call Bessel_FirstKind(point_nm1, nres - 1, J_nm1)
     call Bessel_FirstKind(point_n,   nres,     J_n)
     call Bessel_FirstKind(point_np1, nres + 1, J_np1)
-
+ 
     term1 = ((mu2 - L)/(mu2 - S))*J_np1 + ((mu2 - R)/(mu2 - S))*J_nm1
     term2 = (mu2*sin_psi**2.0 - P) / (2.0*mu2)
     term3 = (cos(alpha_ne)/sin(alpha_ne)) * sin_psi*cos_psi * J_n
     term4 = ((R - L)/(2.0*(mu2 - S)))**2.0
     term5 = ((P - mu2*sin_psi**2.0)/mu2)**2.0
     term6 = (P*cos_psi/mu2)**2.0
-
+ 
     phi_sq = (term1*term2 + term3)**2.0 / (term4*term5 + term6)
-
+ 
 end subroutine phi_squared_cunningham
 
 ! ==============================================================================
@@ -297,8 +298,8 @@ implicit none
     allocate(gX(nx_pts))
     do i = 1, nx_pts
         X = X_min + real(i-1, 8)*dX
-        gX(i) = exp(-((X - X_m1)/X_w1)**2.0d0) &
-                + theta_q * exp(-((X - X_m2)/X_w2)**2.0d0)
+        gX(i) = X * ( exp(-((X - X_m1)/X_w1)**2.0d0) &
+                + theta_q * exp(-((X - X_m2)/X_w2)**2.0d0) )
     end do
  
     if (mod(n_intervals, 2) == 0) then
