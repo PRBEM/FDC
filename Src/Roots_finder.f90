@@ -108,6 +108,10 @@ implicit none
     integer :: i, NN
     real*8  :: Temp2
         
+    ! Scan root finder (Roots_scan.f90)
+    real*8  :: roots_scan(4)
+    integer :: nscan
+    logical :: scan_ok
 
     ! HOT plasma variables
     real*8  :: p, vpar
@@ -297,6 +301,22 @@ implicit none
     ! Written to module variables (a1-a6) for subsequent use in WeightFunction.
     ! Also used locally below as inputs to the polynomial coefficients a7-a16.
     ! -------------------------------------------------------------------------
+#ifdef ROOTS_SCAN
+    b1 = real(nres)*real(sqe)*omega_e / gamma1
+    b2 = 1.0 / (betta*cos(alpha_ne)*cos(theta))
+    call roots_scan_cold(b1, b2, theta, omega_e, omega_pe, omega_i, omega_pi, &
+                         omega_lc, omega_uc, roots, nscan, scan_ok)
+    if (scan_ok) then
+        k_sign(1:4) = 0.0d0
+#ifdef PROFILE
+        call cpu_time(t_prof_2)
+        t_roots_total = t_roots_total + (t_prof_2 - t_prof_1)
+        n_roots_calls = n_roots_calls + 1
+#endif
+        return
+    end if
+    ! Scan declined (band contains a gyrofrequency): use the polynomial below
+#endif
     a1 = omega_i**2.0 + omega_e**2.0 + omega_pe**2.0 + omega_pi**2.0
     a2 = (omega_i*omega_e)**2.0 + (omega_pe*omega_i)**2.0 + (omega_pi*omega_e)**2.0
     a3 = omega_i + real(sqe)*omega_e
@@ -396,6 +416,12 @@ implicit none
 
     end if
 
+#ifdef ROOTCHECK
+    call roots_scan_cold(b1, b2, theta, omega_e, omega_pe, omega_i, omega_pi, &
+                         omega_lc, omega_uc, roots_scan, nscan, scan_ok)
+    call rootcheck_compare(E, alpha, lambda, nres, theta, &
+                           roots, min(NN, 4), roots_scan, nscan, scan_ok)
+#endif
 
     !if (E > 1.9d0 .and. E < 2.0d0 .and. abs(alpha_ne*180.0d0/PI - 10.0d0) < 1.0d0 &
     !    .and. nres == -1 .and. trim(DispersionType) == 'COLD') then

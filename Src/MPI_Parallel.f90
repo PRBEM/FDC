@@ -232,6 +232,9 @@ implicit none
         t_intlam_total+t_roots_total+t_weight_total+t_intn_total, 's'
 #endif
 
+#ifdef ROOTCHECK
+    call rootcheck_summary()
+#endif
 
     call MPI_FINALIZE(ierr)
 
