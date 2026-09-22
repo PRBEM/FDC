@@ -116,7 +116,9 @@ implicit none
     character(len=80) :: intn_file
     real*8            :: intn_dwdk, intn_n2
 
+#ifdef PROFILE
     call cpu_time(t_prof_1)
+#endif
 
     if (my_rank_cached < 0) then
         call MPI_Comm_rank(MPI_COMM_WORLD, my_rank_cached, mpi_ierr)
@@ -432,9 +434,11 @@ implicit none
     end do
 
     N_of_omega = N_of_omega * step
+#ifdef PROFILE
     call cpu_time(t_prof_2)
     t_intn_total = t_intn_total + (t_prof_2 - t_prof_1)
     n_intn_calls = n_intn_calls + 1
+#endif
     return
 
 end subroutine int_N_omega

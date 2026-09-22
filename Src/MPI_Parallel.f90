@@ -222,7 +222,7 @@ implicit none
         end do
 
     end if
-
+#ifdef PROFILE
     write(*,*) '=== PROFILING SUMMARY (rank', mype, ') ==='
     write(*,*) 'Integration_lambda: ', t_intlam_total, 's (', n_intlam_calls, ' calls)'
     write(*,*) 'Roots_finder:       ', t_roots_total,  's (', n_roots_calls,  ' calls)'
@@ -230,6 +230,8 @@ implicit none
     write(*,*) 'int_N_omega:        ', t_intn_total,   's (', n_intn_calls,   ' calls)'
     write(*,*) 'Total accounted:    ', &
         t_intlam_total+t_roots_total+t_weight_total+t_intn_total, 's'
+#endif
+
 
     call MPI_FINALIZE(ierr)
 

@@ -107,6 +107,7 @@ implicit none
 
     integer :: i, NN
     real*8  :: Temp2
+        
 
     ! HOT plasma variables
     real*8  :: p, vpar
@@ -123,7 +124,9 @@ implicit none
     real*8 :: omega_first, k_first
     real*8 :: f_first_pos, f_first_neg
 
+#ifdef PROFILE
     call cpu_time(t_prof_1)
+#endif
 
     betta  = sqrt(E*(E + 2.0)) / (E + 1.0)
     gamma1 = E + 1.0
@@ -393,6 +396,7 @@ implicit none
 
     end if
 
+
     !if (E > 1.9d0 .and. E < 2.0d0 .and. abs(alpha_ne*180.0d0/PI - 10.0d0) < 1.0d0 &
     !    .and. nres == -1 .and. trim(DispersionType) == 'COLD') then
     !    open(88, file='cold_omega_nresmin1.txt', status='unknown', position='append')
@@ -404,12 +408,11 @@ implicit none
     !   close(88)
     !end if
 
-    n_roots_calls = n_roots_calls + 1
-
+#ifdef PROFILE
     call cpu_time(t_prof_2)
     t_roots_total = t_roots_total + (t_prof_2 - t_prof_1)
     n_roots_calls = n_roots_calls + 1
-
+#endif
     return
 
 end subroutine Roots_finder

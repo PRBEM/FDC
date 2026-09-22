@@ -104,6 +104,7 @@ implicit none
   logical :: use_shared
   integer :: jmatch
   real*8, parameter :: LAMBDA_MATCH_TOL = 1.0d-8
+  logical, save :: surf_dumped = .false.
 
   delta_lambda=(lambda_m-lambda_min)/real(nint_tmp)     ! step of magnetic latitude in rad
 
@@ -116,7 +117,9 @@ implicit none
                 n_lambda_in == nint_tmp+1 .and. size(whamp_curves) == nint_tmp+1)
 
   if (delta_lambda > 0.0) then
+#ifdef PROFILE
     call cpu_time(t_prof_1)
+#endif
   
     do i=1, nint_tmp+1
 
@@ -173,6 +176,10 @@ implicit none
                     deallocate(curve%theta, curve%k, curve%k_whamp, &
                                curve%omega, curve%dw_dk, curve%valid, curve%EFL)
                 else
+                    if (.not. surf_dumped) then
+                        call dump_whamp_surface(L, lambda, whamp_curves(jmatch), 'shared')
+                        surf_dumped = .true.
+                    end if
                     call int_D_loc(alpha, E, L, nres, lambda, D_integrad, whamp_curves(jmatch))
                     !if (E > 1.9d0 .and. E < 2.0d0 .and. (abs(alpha*180.0d0/PI - 10.0d0) < 0.5d0 .or. &
                     !                                    abs(alpha*180.0d0/PI - 80.0d0) < 0.5d0)) then
@@ -238,9 +245,11 @@ implicit none
     BavRate(1) = BavRate(1) * delta_lambda
     BavRate(2) = BavRate(2) * delta_lambda
     BavRate(3) = BavRate(3) * delta_lambda / 2
+#ifdef PROFILE
     call cpu_time(t_prof_2)
     t_intlam_total = t_intlam_total + (t_prof_2 - t_prof_1)
     n_intlam_calls = n_intlam_calls + 1
+#endif
 end if
 
 end subroutine Integration_lambda

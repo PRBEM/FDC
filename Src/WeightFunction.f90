@@ -180,7 +180,9 @@ implicit none
     integer, save :: my_rank_cached = -1
     integer :: mpi_ierr
 
+#ifdef PROFILE
     call cpu_time(t_prof_1)
+#endif
 
     ! -------------------------------------------------------------------------
     ! Initialise outputs
@@ -830,9 +832,11 @@ implicit none
         end if
 
     end do
+#ifdef PROFILE
     call cpu_time(t_prof_2)
     t_weight_total = t_weight_total + (t_prof_2 - t_prof_1)
     n_weight_calls = n_weight_calls + 1
+#endif
     return
 
 end subroutine WeightFunction
