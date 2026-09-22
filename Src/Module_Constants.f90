@@ -135,6 +135,7 @@ integer, parameter :: WHAMP_N_THETA = 40  ! theta points in WHAMP dispersion sur
 real*8, parameter :: N_max_hot = 150.0d0   ! test value; Li et al. 2014 range: 130-280
 
 real*8::lam_min,lam_max
+logical::local_mode = .false.   ! .true. when lam_min = lam_max: local D, no bounce averaging
 
 character(len=30)::BwType
 real*8::Bw_Input

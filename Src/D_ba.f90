@@ -101,8 +101,23 @@ implicit none
   real*8::D_integrad(3)
   real*8::A   ! 1/S(alpha), where S(alpha) is proportional to bounce period
   real*8::delta_lambda   ! step of magnetic latitude in rad
+  real*8::Bw                  ! wave amplitude at lambda [T] (local mode)
+  real*8::Theta_function(7)   ! wave normal angle parameters (local mode)
 
-  
+  ! LOCAL MODE: return the local D at lambda = lam_min (equator), no bounce
+  ! averaging and no 1/S(alpha) factor. D_local_n returns the theta-integrated
+  ! local coefficients directly, so it writes straight into BavRate.
+  ! whamp_curves(1) sits at lambda = lam_min (COLD: dummy; HOT/EMIC: all
+  ! shared curves are at lam_min when lam_min = lam_max).
+  if (local_mode) then
+    lambda = lam_min * RAD
+    call Bw_wave(L, lambda, Bw)
+    call Theta_wave(L, lambda, Theta_function)
+    call D_local_n(alpha, E, L, nres, lambda, Bw, Theta_function, &
+                   BavRate, whamp_curves(1))
+    return
+  end if
+
   A=1.0/(1.30-0.56*sin(alpha))          ! 1/S(alpha)
 
   call Lambda_mirror_new(alpha,lambda_m)    ! determine the mirror latitude

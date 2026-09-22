@@ -300,6 +300,21 @@ implicit none
     write(unit_log,"('Minimum of latitude:' 4X, f5.2, 1X 'Degree')") lam_min
     write(unit_log,"('Maximum of latitude:' 4X, f5.1, 1X 'Degree')") lam_max
 
+    ! Local mode: lam_min = lam_max gives local D at that latitude, with no
+    ! bounce averaging. Only the equator is supported: at lambda /= 0 the
+    ! local D refers to the local pitch angle, but the output is labelled
+    ! with the equatorial one.
+    local_mode = (abs(lam_max - lam_min) < 1.0d-12)
+    if (local_mode) then
+        if (abs(lam_min) > 1.0d-12) then
+            write(unit_log,"('ERROR: local mode (lam_min = lam_max) ' // &
+                  'requires lam_min = 0 (equator only).')")
+            write(*,*) 'ERROR: local mode (lam_min = lam_max) requires lam_min = 0.'
+            stop
+        end if
+        write(unit_log,"('LOCAL MODE: equatorial local D, no bounce averaging')")
+    end if
+
     ! -------------------------------------------------------------------------
     ! Wave amplitude model
     ! -------------------------------------------------------------------------
