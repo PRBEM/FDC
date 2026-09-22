@@ -89,7 +89,7 @@ implicit none
 
 real*8,parameter::PI=3.1415926
 real*8,parameter::RAD=PI/180.0
-real*8,parameter::me=9.1093897e-31,mi=1.6726231e-27,c=2.99792458e8,C0=8.84194128288e-12,qe=1.60217733e-19,sqe=-1
+real*8,parameter::me=9.1093897e-31,mi=1.6726231e-27,c=2.99792458e8,C0=8.8541878188e-12,qe=1.60217733e-19,sqe=-1
 integer,parameter::unit_input=10,unit_log=20,unit_output=114
 
 character(len=30)::PT  !!planet
