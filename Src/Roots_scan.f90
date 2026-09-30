@@ -52,6 +52,245 @@
 !
 ! ==============================================================================
 
+! ==============================================================================
+! module rootscan_bounds: skip test and bounds cache (see below)
+! ==============================================================================
+module rootscan_bounds
+    implicit none
+    ! ------------------------------------------------------------------
+    ! Skip test for theta values that cannot contain a resonance,
+    ! following Albert (1999, 2003, 2005, 2007): at fixed theta the
+    ! curves V(omega) (here n_res^2) and Psi(omega) (here 1/n^2) cannot
+    ! intersect inside [omega_lc, omega_uc] if their ranges do not
+    ! overlap, so such theta values contribute nothing and can be skipped.
+    !
+    ! The range of n_res^2 follows analytically (n_res is monotone in
+    ! omega). The range of n^2 depends only on theta, the local plasma
+    ! and the band - not on energy, pitch angle or harmonic number - so
+    ! it is computed once per key and cached here.
+    !
+    ! Albert (2005) shows that Psi has a single interior maximum and no
+    ! interior minimum, i.e. n^2 has its MAXIMUM at one of the band edges
+    ! and at most one interior MINIMUM. Only that minimum is searched for.
+    ! Where the resonance cone lies inside the band, n^2 is unbounded and
+    ! the entry is flagged so that such theta values are never skipped.
+    ! ------------------------------------------------------------------
+    integer, parameter :: NB_SIZE  = 32768        ! table size (power of two)
+    integer, parameter :: NB_NKEY  = 7            ! omega_e, omega_pe, omega_i, omega_pi, lc, uc, theta
+    integer, parameter :: NB_SCAN  = 48           ! samples used to locate the interior minimum
+    real*8,  parameter :: NB_MARGIN = 1.0d-3      ! bounds are widened by this fraction
+    real*8,  save :: nb_key(NB_NKEY, NB_SIZE) = 0.0d0
+    real*8,  save :: nb_lo(2, NB_SIZE) = 0.0d0    ! min n^2 per branch
+    real*8,  save :: nb_hi(2, NB_SIZE) = 0.0d0    ! max n^2 per branch
+    logical, save :: nb_used(NB_SIZE) = .false.
+    logical, save :: nb_pole(NB_SIZE) = .false.
+    integer, save :: nb_count = 0
+    integer(8), save :: nb_hits = 0, nb_miss = 0, nb_skips = 0, nb_calls = 0
+
+contains
+
+    ! .true. if no resonance is possible at this theta.
+    logical function rootscan_can_skip(b1, b2, theta, we, wpe, wi, wpi, wlc, wuc)
+        real*8, intent(in) :: b1, b2, theta, we, wpe, wi, wpi, wlc, wuc
+        real*8  :: nr_lc, nr_uc, nres2_lo, nres2_hi
+        integer :: slot
+
+        rootscan_can_skip = .false.
+        nb_calls = nb_calls + 1
+
+        ! guards: the analysis assumes a smooth n^2 in the band
+        if (.not. (wlc > 0.0d0 .and. wuc > wlc)) return
+        if ((wlc <= we .and. we <= wuc) .or. (wlc <= wi .and. wi <= wuc)) return
+        if (b1 /= b1 .or. b2 /= b2 .or. abs(b2) > huge(1.0d0)) return
+
+        ! n_res is monotone in omega, so its extremes lie at the band edges;
+        ! if it changes sign inside the band, min n_res^2 = 0
+        nr_lc = b2 * (wlc - b1) / wlc
+        nr_uc = b2 * (wuc - b1) / wuc
+        if (nr_lc * nr_uc <= 0.0d0) then
+            nres2_lo = 0.0d0
+        else
+            nres2_lo = min(nr_lc*nr_lc, nr_uc*nr_uc)
+        end if
+        nres2_hi = max(nr_lc*nr_lc, nr_uc*nr_uc)
+
+        call nb_get(we, wpe, wi, wpi, wlc, wuc, theta, slot)
+        if (slot <= 0) return
+        if (nb_pole(slot)) return
+
+        if ((nb_hi(1, slot) < nres2_lo .or. nb_lo(1, slot) > nres2_hi) .and. &
+            (nb_hi(2, slot) < nres2_lo .or. nb_lo(2, slot) > nres2_hi)) then
+            rootscan_can_skip = .true.
+            nb_skips = nb_skips + 1
+        end if
+    end function rootscan_can_skip
+
+    ! n^2 on both branches and A = S tan^2(theta) + P (zero at the cone).
+    ! Must stay consistent with eval_n2 inside roots_scan_cold.
+    subroutine nb_eval_n2(om, X2, we, wpe2, wi, wpi2, n2minus, n2plus, Aout)
+        real*8, intent(in)  :: om, X2, we, wpe2, wi, wpi2
+        real*8, intent(out) :: n2minus, n2plus, Aout
+        real*8 :: R, L, P, S, D, B, C, disc, q, r1, r2, onepX2, twopX2
+        onepX2 = 1.0d0 + X2
+        twopX2 = 2.0d0 + X2
+        R = 1.0d0 - wpe2 / (om * (om - we)) - wpi2 / (om * (om + wi))
+        L = 1.0d0 - wpe2 / (om * (om + we)) - wpi2 / (om * (om - wi))
+        P = 1.0d0 - wpe2 / (om * om) - wpi2 / (om * om)
+        S = 0.5d0 * (R + L)
+        D = 0.5d0 * (R - L)
+        Aout = S * X2 + P
+        B    = R * L * X2 + twopX2 * P * S
+        C    = P * R * L * onepX2
+        disc = (R*L - P*S)**2 * X2 * X2 + 4.0d0 * P*P * D*D * onepX2
+        if (B >= 0.0d0) then
+            q = B + sqrt(disc)
+        else
+            q = B - sqrt(disc)
+        end if
+        if (Aout /= 0.0d0) then
+            r1 = q / (2.0d0 * Aout)
+        else
+            r1 = huge(1.0d0)
+        end if
+        if (q /= 0.0d0) then
+            r2 = 2.0d0 * C / q
+        else
+            r2 = 0.0d0
+        end if
+        if (B >= 0.0d0) then
+            n2minus = r2; n2plus = r1
+        else
+            n2minus = r1; n2plus = r2
+        end if
+    end subroutine nb_eval_n2
+
+    ! Look up the n^2 range for (plasma, band, theta); compute it on a miss.
+    ! slot = 0 means "no entry available", i.e. never skip.
+    subroutine nb_get(we, wpe, wi, wpi, wlc, wuc, theta, slot)
+        real*8,  intent(in)  :: we, wpe, wi, wpi, wlc, wuc, theta
+        integer, intent(out) :: slot
+        real*8, parameter :: GRB = 0.6180339887498949d0
+        real*8  :: key(NB_NKEY), ws(NB_SCAN), n2s(NB_SCAN, 2), As(NB_SCAN)
+        real*8  :: X2, wpe2, wpi2, ratio, lo, hi, xa, xb, xm, fm, fv, d1, d2
+        integer :: h, probe, kk, brr, imin, it
+        logical :: pole
+
+        key = (/ we, wpe, wi, wpi, wlc, wuc, theta /)
+        h = nb_hash(key)
+        do probe = 0, 63
+            slot = 1 + iand(h + probe, NB_SIZE - 1)
+            if (.not. nb_used(slot)) exit
+            if (all(nb_key(:, slot) == key)) then
+                nb_hits = nb_hits + 1
+                return
+            end if
+        end do
+        if (nb_used(slot) .or. nb_count > (7 * NB_SIZE) / 10) then
+            slot = 0                                ! table full: no skipping
+            return
+        end if
+        nb_miss = nb_miss + 1
+
+        X2   = tan(theta)**2
+        wpe2 = wpe * wpe
+        wpi2 = wpi * wpi
+        ratio = exp(log(wuc / wlc) / real(NB_SCAN - 1, 8))
+        ws(1) = wlc
+        do kk = 2, NB_SCAN - 1
+            ws(kk) = ws(kk-1) * ratio
+        end do
+        ws(NB_SCAN) = wuc
+        pole = .false.
+        do kk = 1, NB_SCAN
+            call nb_eval_n2(ws(kk), X2, we, wpe2, wi, wpi2, n2s(kk,1), n2s(kk,2), As(kk))
+            if (kk > 1) then
+                if (As(kk) * As(kk-1) < 0.0d0) pole = .true.
+            end if
+        end do
+
+        do brr = 1, 2
+            ! maximum: Albert (2005) - n^2 has no interior maximum, so the
+            ! largest value is at one of the band edges
+            hi = max(n2s(1, brr), n2s(NB_SCAN, brr))
+            ! minimum: at an edge or at the single interior minimum
+            imin = minloc(n2s(:, brr), 1)
+            lo = n2s(imin, brr)
+            if (imin > 1 .and. imin < NB_SCAN) then
+                xa = ws(imin-1); xb = ws(imin+1)
+                do it = 1, 50                        ! golden-section search
+                    d1 = xb - GRB * (xb - xa)
+                    d2 = xa + GRB * (xb - xa)
+                    fm = nb_n2(d1, X2, we, wpe2, wi, wpi2, brr)
+                    fv = nb_n2(d2, X2, we, wpe2, wi, wpi2, brr)
+                    lo = min(lo, fm, fv)
+                    if (fm < fv) then
+                        xb = d2
+                    else
+                        xa = d1
+                    end if
+                end do
+                xm = 0.5d0 * (xa + xb)
+                lo = min(lo, nb_n2(xm, X2, we, wpe2, wi, wpi2, brr))
+            end if
+            nb_lo(brr, slot) = lo - NB_MARGIN * abs(lo) - 1.0d-12
+            nb_hi(brr, slot) = hi + NB_MARGIN * abs(hi) + 1.0d-12
+        end do
+
+        nb_key(:, slot) = key
+        nb_pole(slot)   = pole
+        nb_used(slot)   = .true.
+        nb_count        = nb_count + 1
+    end subroutine nb_get
+
+    real*8 function nb_n2(om, X2, we, wpe2, wi, wpi2, br)
+        real*8,  intent(in) :: om, X2, we, wpe2, wi, wpi2
+        integer, intent(in) :: br
+        real*8 :: a, b, cc
+        call nb_eval_n2(om, X2, we, wpe2, wi, wpi2, a, b, cc)
+        if (br == 1) then
+            nb_n2 = a
+        else
+            nb_n2 = b
+        end if
+    end function nb_n2
+
+    integer function nb_hash(key)
+        real*8, intent(in) :: key(NB_NKEY)
+        integer(8) :: h8, w
+        integer :: kk
+        h8 = 1469598103934665603_8
+        do kk = 1, NB_NKEY
+            w = transfer(key(kk), w)
+            h8 = ieor(h8, w)
+            h8 = h8 * 1099511628211_8
+            h8 = ieor(h8, ishft(h8, -29))
+        end do
+        nb_hash = int(iand(ishft(h8, -13), int(NB_SIZE - 1, 8)))
+    end function nb_hash
+
+end module rootscan_bounds
+
+
+! ==============================================================================
+! SUBROUTINE: rootscan_skip_test
+! ==============================================================================
+! External wrapper around rootscan_can_skip, so that callers (D_local_n) do
+! not need a module dependency. can_skip = .true. means: no resonance is
+! possible at this theta, the point contributes nothing and WeightFunction
+! need not be called.
+! ==============================================================================
+subroutine rootscan_skip_test(b1, b2, theta, omega_e, omega_pe, omega_i, omega_pi, &
+                              omega_lc, omega_uc, can_skip)
+use rootscan_bounds
+implicit none
+    real*8,  intent(in)  :: b1, b2, theta, omega_e, omega_pe, omega_i, omega_pi
+    real*8,  intent(in)  :: omega_lc, omega_uc
+    logical, intent(out) :: can_skip
+    can_skip = rootscan_can_skip(b1, b2, theta, omega_e, omega_pe, omega_i, omega_pi, &
+                                 omega_lc, omega_uc)
+end subroutine rootscan_skip_test
+
+
 module rootcheck_stats
     implicit none
     integer(8), save :: rc_calls    = 0   ! calls compared
@@ -88,6 +327,7 @@ end module rootcheck_stats
 ! ==============================================================================
 subroutine roots_scan_cold(b1, b2, theta, omega_e, omega_pe, omega_i, omega_pi, &
                            omega_lc, omega_uc, roots, nroots, ok)
+use rootscan_bounds
 implicit none
     real*8,  intent(in)  :: b1, b2, theta
     real*8,  intent(in)  :: omega_e, omega_pe, omega_i, omega_pi
@@ -134,6 +374,12 @@ implicit none
     X4     = X2 * X2
     onepX2 = 1.0d0 + X2
     twopX2 = 2.0d0 + X2
+
+#ifndef NO_THETA_SKIP
+    ! ---- skip test (Albert): can n^2 and n_res^2 overlap at all? ----
+    if (rootscan_can_skip(b1, b2, theta, omega_e, omega_pe, omega_i, omega_pi, &
+                          omega_lc, omega_uc)) return      ! ok = .true., nroots = 0
+#endif
 
     ! ---- scan: log-spaced samples, endpoints exactly at the band edges ----
     ratio = exp(log(omega_uc / omega_lc) / real(NSCAN - 1, 8))
@@ -252,6 +498,7 @@ contains
     end function nres
 
     ! br = 0: A(omega); br = 1, 2: H on the minus / plus branch
+
     real*8 function hfun(om, br)
         real*8,  intent(in) :: om
         integer, intent(in) :: br
@@ -353,6 +600,10 @@ contains
             call try_bracket(xs, hi_in, br)
         end if
     end subroutine search_hidden_pair
+
+    ! Look up the n^2 range for this (plasma, band, theta); compute it on a
+    ! miss. Returns the table slot, or 0 if the table is full.
+
 
     ! Brent's method (Brent 1973) on [a0, b0] with fa0*fb0 < 0
     real*8 function brent_zero(a0, b0, fa0, fb0, br)

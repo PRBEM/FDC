@@ -73,6 +73,8 @@ implicit none
     real*8 :: WeightValue(3)
     real*8 :: theta_min, theta_max, theta
     real*8 :: BB1, BB2, BB3
+    logical :: skip_theta
+    real*8  :: b2_theta
     integer :: i
  
     ! --- CUNNINGHAM path: pre-loop setup variables ---
@@ -121,6 +123,36 @@ implicit none
         end block
         return
     end if
+
+    ! Local plasma state (same calls as WeightFunction)
+    call Local_alpha(alpha, lambda, alpha_ne)
+    call ElectronDensity(L, lambda, Ne_local)
+
+    lambda_eq = 0.0d0
+    call B_field(L, lambda,    B_local)
+    call B_field(L, lambda_eq, B_eq)
+
+    omega_e    = qe * B_local / me
+    omega_e_eq = qe * B_eq    / me
+    omega_i    = omega_e * me / mi
+    omega_pe   = sqrt(Ne_local * qe * qe / (C0 * me))
+    omega_pi   = omega_pe * sqrt(me / mi)
+
+    omega_m  = 0.0d0
+    d_omega  = 0.0d0
+    omega_lc = 0.0d0
+    omega_uc = 0.0d0
+    call Freq_Spectral(L, lambda, omega_e_eq, omega_m, d_omega, omega_lc, omega_uc)
+
+    ! Particle state
+    betta  = sqrt(E*(E + 2.0d0)) / (E + 1.0d0)
+    gamma1 = E + 1.0d0
+    p      = me * c * sqrt((E + 1.0d0)**2.0d0 - 1.0d0)
+    vpar   = p / gamma1 / me * cos(alpha_ne)
+    p_perp = p * sin(alpha_ne)
+
+    ! Resonance condition term b1 = nres*sqe*omega_e/gamma1
+    b1 = real(nres, 8) * real(sqe, 8) * omega_e / gamma1
  
     if (trim(DiffusionFormulation) == 'CUNNINGHAM') then
  
@@ -134,37 +166,6 @@ implicit none
       X_w1 = tan(theta_w1/180.0d0*PI)
       X_m2 = tan(theta_m2/180.0d0*PI)
       X_w2 = tan(theta_w2/180.0d0*PI)
- 
- 
-      ! Local plasma state (same calls as WeightFunction)
-      call Local_alpha(alpha, lambda, alpha_ne)
-      call ElectronDensity(L, lambda, Ne_local)
- 
-      lambda_eq = 0.0d0
-      call B_field(L, lambda,    B_local)
-      call B_field(L, lambda_eq, B_eq)
- 
-      omega_e    = qe * B_local / me
-      omega_e_eq = qe * B_eq    / me
-      omega_i    = omega_e * me / mi
-      omega_pe   = sqrt(Ne_local * qe * qe / (C0 * me))
-      omega_pi   = omega_pe * sqrt(me / mi)
- 
-      omega_m  = 0.0d0
-      d_omega  = 0.0d0
-      omega_lc = 0.0d0
-      omega_uc = 0.0d0
-      call Freq_Spectral(L, lambda, omega_e_eq, omega_m, d_omega, omega_lc, omega_uc)
- 
-      ! Particle state
-      betta  = sqrt(E*(E + 2.0d0)) / (E + 1.0d0)
-      gamma1 = E + 1.0d0
-      p      = me * c * sqrt((E + 1.0d0)**2.0d0 - 1.0d0)
-      vpar   = p / gamma1 / me * cos(alpha_ne)
-      p_perp = p * sin(alpha_ne)
- 
-      ! Resonance condition term b1 = nres*sqe*omega_e/gamma1
-      b1 = real(nres, 8) * real(sqe, 8) * omega_e / gamma1
  
       ! g(X) normalization integral (once for this lambda, not per theta/root)
       call gX_normalization_integral(X_m1, X_w1, X_m2, X_w2, theta_q, &
@@ -182,9 +183,22 @@ implicit none
       WeightValue(3) = 0.0
  
       if (trim(DiffusionFormulation) /= 'CUNNINGHAM') then
-        call WeightFunction(alpha, E, L, lambda, Bw, Theta_function, nres, theta, &
-                            WeightValue, whamp_curve)
- 
+        skip_theta = .false.
+#ifndef NO_THETA_SKIP
+        ! Albert (1999, 2003, 2005, 2007): if the ranges of n^2 and n_res^2
+        ! over [omega_lc, omega_uc] do not overlap, no resonance is possible
+        ! at this theta and WeightFunction would return zero anyway.
+        if (trim(DispersionType) == 'COLD') then
+            b2_theta = 1.0d0 / (betta * cos(alpha_ne) * cos(theta))
+            call rootscan_skip_test(b1, b2_theta, theta, omega_e, omega_pe, &
+                                    omega_i, omega_pi, omega_lc, omega_uc, skip_theta)
+        end if
+#endif
+        if (.not. skip_theta) then
+            call WeightFunction(alpha, E, L, lambda, Bw, Theta_function, nres, theta, &
+                                WeightValue, whamp_curve)
+        end if
+
       else
         X = tan(theta)
         gX_raw = X * ( exp(-((X - X_m1)/X_w1)**2.0d0) &
