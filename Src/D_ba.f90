@@ -121,7 +121,8 @@ implicit none
   A=1.0/(1.30-0.56*sin(alpha))          ! 1/S(alpha)
 
   call Lambda_mirror_new(alpha,lambda_m)    ! determine the mirror latitude
-	call B_field(L,lambda_m,B_m)
+	call B_field(L, 0.0d0, B_m)
+  B_m = B_m / sin(alpha)**2
 
   ! determine the range of magnetic latitude
   lambda_min=lam_min*RAD                 ! in rad
