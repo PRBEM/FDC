@@ -804,8 +804,14 @@ implicit none
 
                 acct_N = N_of_omega
 
-                G2 = (exp(-((X - X_m1)/X_w1)**2.0) &
-                    + theta_q * exp(-((X - X_m2)/X_w2)**2.0)) / N_of_omega
+                if (N_of_omega > 0.0d0) then
+                    G2 = (exp(-((X - X_m1)/X_w1)**2.0) &
+                        + theta_q * exp(-((X - X_m2)/X_w2)**2.0)) / N_of_omega
+                else
+                    ! No wave power in the permitted theta range at this omega:
+                    ! the resonance cannot contribute.
+                    G2 = 0.0d0
+                end if
 
                 dB_local = Bw
                 G3 = omega_e / (gamma1**2.0) * (dB_local / B_local)**2.0
