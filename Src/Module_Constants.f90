@@ -128,7 +128,7 @@ real*8::omega_m_per,d_omega_per,o_lc,o_uc
 integer::nint,nint_zero_res,nint_X,nint_N,nint_N_res_cone
 
 real*8,  parameter :: cone_backoff   = 0.99d0
-logical, parameter :: ConeTruncateN  = .false.
+logical, parameter :: ConeTruncateN  = .true.
 
 integer, parameter :: WHAMP_N_K = 80  ! number of k points in WHAMP dispersion curve
 integer, parameter :: WHAMP_N_THETA = 40  ! theta points in WHAMP dispersion surface
