@@ -176,10 +176,14 @@ implicit none
                     deallocate(curve%theta, curve%k, curve%k_whamp, &
                                curve%omega, curve%dw_dk, curve%valid, curve%EFL)
                 else
+#ifdef DIAG
+                    ! Diagnostic: writes the shared WHAMP dispersion surface once
+                    ! per process (whampsurf_*.txt), for checking the interpolation.
                     if (.not. surf_dumped) then
                         call dump_whamp_surface(L, lambda, whamp_curves(jmatch), 'shared')
                         surf_dumped = .true.
                     end if
+#endif
                     call int_D_loc(alpha, E, L, nres, lambda, D_integrad, whamp_curves(jmatch))
                     !if (E > 1.9d0 .and. E < 2.0d0 .and. (abs(alpha*180.0d0/PI - 10.0d0) < 0.5d0 .or. &
                     !                                    abs(alpha*180.0d0/PI - 80.0d0) < 0.5d0)) then

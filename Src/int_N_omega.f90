@@ -182,13 +182,19 @@ implicit none
     !    close(97)
     !end if
 
-    ! ---- diagnostic gate: one (E, alpha, lambda, nres) cell only ----
-    ! NOTE: E is dimensionless (gamma-1). 2 keV -> 0.003914
+#ifdef DIAG
+    ! Diagnostic: logs the N(omega) integrand for one specific grid point
+    ! (see the commented-out block further down). Off by default, since the
+    ! condition would otherwise be evaluated on every call and the fast cold
+    ! path below is skipped whenever intn_log is true.
     intn_log = (E > 0.0037d0 .and. E < 0.0041d0) &
          .and. (abs(alpha*180.0d0/PI - 60.0d0) < 1.0d0) &
          .and. (abs(lambda*180.0d0/PI) < 0.5d0) &
          .and. (nres == 0)
     if (intn_log) intn_call = intn_call + 1
+#else
+    intn_log = .false.
+#endif
 
 #ifndef INTN_ORIG
     ! Fast cold path (int_N_cold_fast.f90). The loop below is still used for
