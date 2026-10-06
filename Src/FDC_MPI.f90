@@ -394,6 +394,12 @@ implicit none
     DispersionType = to_upper(trim(DispersionType))
     select case(DispersionType)
         case('COLD', 'HOT', 'EMIC')
+            if (DispersionType == 'EMIC') then
+                write(unit_log,"('WARNING: EMIC dispersion is work in progress, ' // &
+                      'unvalidated and incomplete. Results should not be used ' // &
+                      'without checking the implementation.')")
+                write(*,*) 'WARNING: EMIC dispersion is work in progress and unvalidated.'
+            end if
             write(unit_log,"('Dispersion type:'4x,A10)") DispersionType
         case default
             write(unit_log,"('Invalid Dispersion Type:' 4x, A10)") DispersionType
