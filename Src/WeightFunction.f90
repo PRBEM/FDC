@@ -17,10 +17,11 @@
 !   the resonance condition:
 !       omega - k_par * v_par - n * Omega_e / gamma = 0
 !   The dispersion properties (refractive index, group velocity, polarisation
-!   factor) are obtained via Get_dispersion_properties and
-!   Get_polarisation_factor from module dispersion, which currently implements
-!   the cold plasma (Stix) formulation and is designed to accept a hot plasma
-!   (WHAMP) implementation in future.
+!   factor) come from Get_dispersion_properties and Get_polarisation_factor
+!   in module dispersion. For HOT/EMIC, n^2 and dw/dk are then overwritten by
+!   interpolation on the tabulated WHAMP surface passed in as whamp_curve,
+!   with a tolerance fallback and a targeted rescue (get_whamp_point) at the
+!   edges of the curve.
 !
 !   The integrand is assembled from:
 !     G1 : frequency-weighted wave power spectral density at resonant omega
@@ -80,9 +81,16 @@
 !   dispersion - Dispersion relation interface (Module_Dispersion.f90)
 !
 ! NOTES:
+!   - This routine is called once per theta point by D_local_n, but only for
+!     theta values that can contain a resonance: the skip test in
+!     rootscan_skip_test (COLD + LYONS) filters out the rest, typically 35
+!     to 65% of the grid. A skipped point would return zero here anyway.
 !   - The resonance cone angle is checked; if it falls within the specified
-!     wave normal angle range, theta_max is reduced to 0.99 * theta_cone to
-!     avoid the singularity in the dispersion relation. This guard is
+!     wave normal angle range and ConeTruncateN is .true., theta_max is
+!     reduced to cone_backoff * theta_cone (both in Module_Constants) to
+!     avoid the singularity in the dispersion relation. With
+!     ConeTruncateN = .false. the N(omega) integral runs to theta_max
+!     regardless, which changes every diffusion coefficient. This guard is
 !     primarily needed by the 'LYONS' formulation's int_N_omega integral,
 !     which (per Cunningham 2023) is not integrable if the resonance cone
 !     angle is included as an integration endpoint and g(X) > 0 there. The
@@ -90,10 +98,19 @@
 !     non-integrability problem (no integral over theta is performed), but
 !     the guard is left in place for both formulations for now since it
 !     also affects the validity of n_ref_ind2 itself near the cone.
-!   - Roots that are zero or lie below the lower-hybrid frequency are silently
-!     discarded (WeightValue contributions set to zero).
-!   - The sign check on k_vec for nres > 0 will halt execution if violated;
-!     this is a consistency check inherited from the original implementation.
+!   - Roots that are zero are discarded. The second condition in the same
+!     test is meant as a lower-hybrid cut, but compares a frequency in rad/s
+!     with the dimensionless sqrt((omega_pe/omega_e)^2 + 1), so it never
+!     triggers. Harmless for chorus, where omega_lc already lies above
+!     omega_LH, but it would not protect a lower band. Left unchanged
+!     because fixing it would change results.
+!   - If N(omega) comes out zero the resonance contributes nothing and G2 is
+!     set to zero. That happens when the resonance cone has closed to a
+!     fraction of a degree, i.e. for roots at omega -> Omega_e, which occur
+!     when omega_uc is set to the electron gyrofrequency. Without the guard
+!     G2 would be infinite and the result NaN.
+!   - The sign check on k_vec for nres > 0 is commented out; it was a
+!     consistency check inherited from the original implementation.
 !   - DiffusionFormulation ('LYONS' or 'CUNNINGHAM', from module constants)
 !     selects which normalisation is used for G2, as described above. The
 !     'LYONS' path reproduces the code's original behaviour exactly. 
@@ -105,7 +122,9 @@ subroutine WeightFunction(alpha, E, L, lambda, Bw, Theta_function, nres, theta, 
 
 use constants
 use dispersion
+use accounting
 implicit none
+    include "mpif.h"
 
     real*8, intent(in)  :: alpha, E, L, lambda, Bw, Theta_function(7), theta
     integer, intent(in) :: nres
@@ -119,7 +138,10 @@ implicit none
     real*8 :: theta_min, theta_max
     real*8 :: theta_m1, theta_w1, theta_m2, theta_w2, theta_q
     real*8 :: theta_cone, theta_max_eff
+    integer          :: acct_status
+    real*8           :: acct_N
     character :: res_cone
+    character(len=8) :: whamp_path
 
     ! --- Particle state ---
     real*8 :: gamma1, betta, alpha_ne
@@ -167,16 +189,28 @@ implicit none
     ! --- Wave normal angle normalisation ---
     real*8 :: N_of_omega
 
-    real*8 :: t_prof_1, t_prof_2
+    integer(8) :: t_prof_1, t_prof_2, prof_rate
 
     integer :: i_theta_lo_cached, i_theta_hi_cached
     real*8  :: w_theta_cached
 
-    call cpu_time(t_prof_1)
+#ifdef DIAG
+    integer, save :: my_rank_cached = -1
+    integer :: mpi_ierr
+#endif
+
+#ifdef PROFILE
+    call system_clock(t_prof_1)
+#endif
 
     ! -------------------------------------------------------------------------
     ! Initialise outputs
     ! -------------------------------------------------------------------------
+#ifdef DIAG
+    if (my_rank_cached < 0) then
+        call MPI_Comm_rank(MPI_COMM_WORLD, my_rank_cached, mpi_ierr)
+    end if
+#endif
     D_tmp(1)    = 0.0
     D_tmp(2)    = 0.0
     D_tmp(3)    = 0.0
@@ -253,10 +287,10 @@ implicit none
 
         if (roots(i) == 0.0 .or. roots(i) <= sqrt((omega_pe/omega_e)**2 + 1.0)) then
 
-            ! Root is invalid — contribute nothing
-            WeightValue(1) = WeightValue(1)
-            WeightValue(2) = WeightValue(2)
-            WeightValue(3) = WeightValue(3)
+            !call acct_write(DispersionType, my_rank_cached, 1, i, nres, &
+            !                L, E, alpha*180.0d0/PI, lambda*180.0d0/PI, &
+            !                theta*180.0d0/PI, -1.0d0, &
+            !                roots(i), -1.0d0, -1.0d0, -1.0d0, -1.0d0, 0.0d0)
 
         else
 
@@ -288,6 +322,8 @@ implicit none
             DP%BFL(1) = (0.0d0, 0.0d0)
             DP%BFL(2) = (0.0d0, 0.0d0)
             DP%BFL(3) = (0.0d0, 0.0d0)
+
+            whamp_path = 'NONE'
 
             ! -----------------------------------------------------------------
             ! HOT case: overwrite n_ref_ind2 and dw_dk from WHAMP curve
@@ -403,6 +439,7 @@ implicit none
                                                    ((1.0d0-w_theta)*whamp_curve%BFL(3,i_theta_lo,i_k-1) + &
                                                     w_theta*whamp_curve%BFL(3,i_theta_hi,i_k-1)) )
                                 found = .true.
+                                whamp_path = 'INTERP'
                                 exit
                             end if
                         end do
@@ -455,6 +492,7 @@ implicit none
                                                     w_theta*whamp_curve%BFL(2,i_theta_hi,i_last_valid)
                                         DP%BFL(3) = (1.0d0-w_theta)*whamp_curve%BFL(3,i_theta_lo,i_last_valid) + &
                                                     w_theta*whamp_curve%BFL(3,i_theta_hi,i_last_valid)
+                                        whamp_path = 'TOLFB'
                                     else if (omega < omega_min_t .and. abs(omega-omega_min_t) < tol*omega_min_t) then
                                         n_ref_ind2 = (whamp_curve%k(i_first_valid)*c/omega_min_t)**2.0d0
                                         dw_dk = (1.0d0-w_theta)*whamp_curve%dw_dk(i_theta_lo,i_first_valid) + &
@@ -473,13 +511,14 @@ implicit none
                                                     w_theta*whamp_curve%BFL(2,i_theta_hi,i_first_valid)
                                         DP%BFL(3) = (1.0d0-w_theta)*whamp_curve%BFL(3,i_theta_lo,i_first_valid) + &
                                                     w_theta*whamp_curve%BFL(3,i_theta_hi,i_first_valid)
+                                        whamp_path = 'TOLFB'
                                     end if
                                 end if
                             end block
                         end if
                         if (.not. found) then
                             block
-                                real*8 :: n2_targeted, dw_targeted
+                                real*8 :: n2_targeted, dw_targeted, omega_found
                                 complex(kind=8) :: EFL_targeted(3)
                                 complex(kind=8) :: BFL_targeted(3)
                                 logical :: valid_targeted
@@ -496,7 +535,14 @@ implicit none
                                 !    close(81)
                                 !end if
 
-                                if (valid_targeted) then
+                                if (valid_targeted .and. n2_targeted > 0.0d0) then
+                                    omega_found = abs(k_vec) * c / sqrt(n2_targeted)
+                                else
+                                    omega_found = -1.0d0
+                                end if
+
+                                if (valid_targeted .and. n2_targeted > 0.0d0 .and. &
+                                    abs(omega_found - omega) <= 1.0d-3 * omega) then
                                     n_ref_ind2 = n2_targeted
                                     dw_dk      = dw_targeted
                                     if (k_vec < 0.0d0) dw_dk = -dw_dk
@@ -507,6 +553,7 @@ implicit none
                                     DP%BFL(2) = BFL_targeted(2)
                                     DP%BFL(3) = BFL_targeted(3)
                                     found = .true.
+                                    whamp_path = 'RESCUE'
                                 end if
                             end block
                         end if
@@ -518,10 +565,10 @@ implicit none
                         !    close(87)
                         !end if
                         if (.not. found) then
-                            ! Both primary interpolation and targeted rescue failed for this
-                            ! resonance/theta/frequency sub-step. Skip this root's contribution
-                            ! entirely — do NOT fall through to the integrand calculation below,
-                            ! which would otherwise use stale cold-dispersion n_ref_ind2/dw_dk.
+                            !call acct_write(DispersionType, my_rank_cached, 2, i, nres, &
+                            !                L, E, alpha*180.0d0/PI, lambda*180.0d0/PI, &
+                            !                theta*180.0d0/PI, -1.0d0, &
+                            !                omega, -1.0d0, -1.0d0, -1.0d0, -1.0d0, 0.0d0)
                             cycle
                         end if
                     end block
@@ -567,10 +614,10 @@ implicit none
                 if (DP%P / DP%S < 0) then
                     theta_cone = atan(sqrt(-DP%P / DP%S)) * 180.0 / PI
 
-                    if (theta_cone*0.9 < theta_max .and. theta_cone*0.99 > theta_max) then
+                    if (theta_cone*0.9 < theta_max .and. theta_cone*cone_backoff > theta_max) then
                         res_cone = 'Y'
-                    else if (theta_cone*0.99 <= theta_max) then
-                        theta_max_eff = theta_cone * 0.99
+                    else if (theta_cone*cone_backoff <= theta_max) then
+                        theta_max_eff = theta_cone * cone_backoff
                         res_cone = 'Y'
                     end if
                 end if
@@ -593,37 +640,131 @@ implicit none
                                          BesselF1, BesselF2, BesselF3, &
                                          DP, Fsq)
 
+#ifdef DIAG
+            ! Diagnostic only: recomputes cold-plasma reference quantities at the
+            ! same (omega, theta) so that the WHAMP polarisation can be compared
+            ! with the cold limit. The log at the end of the block is commented
+            ! out, so without -DDIAG none of this runs: that saves three routine
+            ! calls and a good deal of complex arithmetic per root in HOT runs.
             if (trim(DispersionType) == 'HOT' .or. trim(DispersionType) == 'EMIC') then
                 block
-                    real*8 :: n2_cold_local, Fsq_cold_equiv, reldiff_fsq
-                    real*8 :: sin2_theta_kE, E_norm_sq_check, B_norm_sq_check
-                    character(len=48) :: fsq_debug_filename
-                    real*8, parameter :: whamp_V_inv2 = 299.7925d0 * 299.7925d0
+                    real*8 :: n2_cold_local, Fsq_cold_equiv
+                    real*8 :: E_norm_sq_i, B_norm_sq_i
+                    real*8 :: sin2_bfl_i, sin2_geom_i, n2_from_BFL
+                    real*8 :: Fsq_raw_i, Fsq_lyons_cold
+                    real*8 :: sin2_cold, k_sgn_d
+                    complex(kind=8) :: E_cold_vec(3)
+                    complex(kind=8) :: E_R_i, E_L_i, Theta_i, E_par_k_i
+                    logical :: ok_cold
+                    real*8, parameter :: c_undo = 299.7925d0
+                    character(len=64) :: diagA_file
 
+                    ! ---- signed k, as used in Theta_nk ----
+                    if (k_vec >= 0.0d0) then
+                        k_sgn_d =  1.0d0
+                    else
+                        k_sgn_d = -1.0d0
+                    end if
+
+                    ! ---- cold reference quantities at the SAME (omega, theta) ----
                     call cold_plasma_refractive_index(omega, theta, DP%P, DP%S, DP%R, DP%L, &
-                                                       n2_cold_local)
+                                                      n2_cold_local)
                     call cold_plasma_polarisation(alpha_ne, nres, theta, k_vec, omega, &
                                                   BesselF1, BesselF2, BesselF3, &
                                                   n2_cold_local, DP%R, DP%L, DP%P, DP%S, &
                                                   Fsq_cold_equiv)
+                    call cold_plasma_efield_diag(theta, n2_cold_local, DP%R, DP%L, DP%P, &
+                                                 DP%S, DP%D, E_cold_vec, sin2_cold, ok_cold)
 
+                    ! ---- quantities from the EFL/BFL actually used this step ----
+                    E_norm_sq_i = real(DP%EFL(1)*conjg(DP%EFL(1)) &
+                                     + DP%EFL(2)*conjg(DP%EFL(2)) &
+                                     + DP%EFL(3)*conjg(DP%EFL(3)))
+                    B_norm_sq_i = real(DP%BFL(1)*conjg(DP%BFL(1)) &
+                                     + DP%BFL(2)*conjg(DP%BFL(2)) &
+                                     + DP%BFL(3)*conjg(DP%BFL(3))) * c_undo**2
 
-                    E_norm_sq_check = real(DP%EFL(1)*conjg(DP%EFL(1)) + DP%EFL(2)*conjg(DP%EFL(2)) + DP%EFL(3)*conjg(DP%EFL(3)))
-                    B_norm_sq_check = real(DP%BFL(1)*conjg(DP%BFL(1)) + DP%BFL(2)*conjg(DP%BFL(2)) + DP%BFL(3)*conjg(DP%BFL(3)))
-                    if (n_ref_ind2 > 0.0d0 .and. E_norm_sq_check > 0.0d0) then
-                        sin2_theta_kE = (B_norm_sq_check * whamp_V_inv2) / (n_ref_ind2 * E_norm_sq_check)
+                    ! OLD route: sin^2 inferred from BFL and the interpolated n^2.
+                    ! Kept for comparison — this is the quantity that carried the
+                    ! n^2 inconsistency.
+                    if (E_norm_sq_i > 0.0d0 .and. n_ref_ind2 > 0.0d0) then
+                        sin2_bfl_i = B_norm_sq_i / (n_ref_ind2 * E_norm_sq_i)
                     else
-                        sin2_theta_kE = -1.0d0
+                        sin2_bfl_i = -1.0d0
                     end if
 
-                    if (Fsq_cold_equiv /= 0.0d0) then
-                        reldiff_fsq = abs(Fsq - Fsq_cold_equiv) / abs(Fsq_cold_equiv)
-                    else
-                        reldiff_fsq = -1.0d0
+                    ! NEW route: sin^2 from EFL geometry alone (khat = (sin,0,cos)
+                    ! in WHAMP's basis, since e1 lies along k_perp).
+                    sin2_geom_i = -1.0d0
+                    if (E_norm_sq_i > 0.0d0) then
+                        E_par_k_i = DP%EFL(1)*sin(theta) + DP%EFL(3)*cos(theta)
+                        sin2_geom_i = 1.0d0 - real(E_par_k_i*conjg(E_par_k_i)) / E_norm_sq_i
+                        sin2_geom_i = max(0.0d0, min(1.0d0, sin2_geom_i))
                     end if
 
+                    ! Refractive index implied by BFL itself, for direct comparison
+                    ! against the interpolated n_ref_ind2 and the cold value.
+                    n2_from_BFL = -1.0d0
+                    if (E_norm_sq_i > 0.0d0 .and. sin2_geom_i > 0.0d0) then
+                        n2_from_BFL = B_norm_sq_i / (E_norm_sq_i * sin2_geom_i)
+                    end if
+
+                    ! ---- Fsq from WHAMP fields, new formula, gate bypassed ----
+                    E_R_i = (DP%EFL(1) - (0.0d0,1.0d0)*DP%EFL(2)) / sqrt(2.0d0)
+                    E_L_i = (DP%EFL(1) + (0.0d0,1.0d0)*DP%EFL(2)) / sqrt(2.0d0)
+                    Theta_i = (E_R_i*BesselF3 + E_L_i*BesselF1) / sqrt(2.0d0) &
+                            + k_sgn_d * DP%EFL(3)*BesselF2*cos(alpha_ne)/sin(alpha_ne)
+                    if (E_norm_sq_i > 0.0d0 .and. sin2_geom_i > 0.0d0) then
+                        Fsq_raw_i = real(Theta_i*conjg(Theta_i)) / (E_norm_sq_i * sin2_geom_i)
+                    else
+                        Fsq_raw_i = -1.0d0
+                    end if
+
+                    ! ---- TEST C: same Lyons formula, but on the COLD eigenvector.
+                    ! Isolates formula error from field error. If this matches
+                    ! Fsq_cold, the two formulations agree and any residual is in
+                    ! WHAMP's EFL. If it does not, the discrepancy is in the
+                    ! formula itself and has nothing to do with WHAMP. ----
+                    Fsq_lyons_cold = -1.0d0
+                    if (ok_cold .and. sin2_cold > 0.0d0) then
+                        block
+                            complex(kind=8) :: E_Rc, E_Lc, Theta_c
+                            real*8 :: E_norm_c
+                            E_norm_c = real(E_cold_vec(1)*conjg(E_cold_vec(1)) &
+                                          + E_cold_vec(2)*conjg(E_cold_vec(2)) &
+                                          + E_cold_vec(3)*conjg(E_cold_vec(3)))
+                            E_Rc = (E_cold_vec(1) - (0.0d0,1.0d0)*E_cold_vec(2)) / sqrt(2.0d0)
+                            E_Lc = (E_cold_vec(1) + (0.0d0,1.0d0)*E_cold_vec(2)) / sqrt(2.0d0)
+                            Theta_c = (E_Rc*BesselF3 + E_Lc*BesselF1) / sqrt(2.0d0) &
+                                    + k_sgn_d * E_cold_vec(3)*BesselF2 &
+                                      *cos(alpha_ne)/sin(alpha_ne)
+                            if (E_norm_c > 0.0d0) &
+                                Fsq_lyons_cold = real(Theta_c*conjg(Theta_c)) &
+                                                 / (E_norm_c * sin2_cold)
+                        end block
+                    end if
+
+                    ! ---- log: equatorial slice only, to bound file size ----
+                    !if (abs(lambda*180.0d0/PI) < 0.5d0) then
+                    !    write(diagA_file,'(A,I0,A)') 'testA_sin2_rank', my_rank_cached, '.txt'
+                    !    open(94, file=trim(diagA_file), status='unknown', position='append')
+                    !    write(94,*) &
+                    !        'E=', E, ' alpha=', alpha_ne*180.0d0/PI, &
+                    !        ' nres=', nres, ' theta=', theta*180.0d0/PI, &
+                    !        ' omega=', omega, ' ksgn=', k_sgn_d, &
+                    !        ' n2_hot=', n_ref_ind2, ' n2_cold=', n2_cold_local, &
+                    !        ' n2_bfl=', n2_from_BFL, &
+                    !        ' sin2_bfl=', sin2_bfl_i, ' sin2_geom=', sin2_geom_i, &
+                    !        ' sin2_cold=', sin2_cold, &
+                    !        ' Fsq_raw=', Fsq_raw_i, ' Fsq_lyonscold=', Fsq_lyons_cold, &
+                    !        ' Fsq_cold=', Fsq_cold_equiv, &
+                    !        ' okcold=', ok_cold, ' path=', trim(whamp_path), &
+                    !        ' EFL=', DP%EFL, ' Ecold=', E_cold_vec
+                    !    close(94)
+                    !end if
                 end block
             end if
+#endif
 
             !if (E > 1.9d0 .and. E < 2.0d0 .and. abs(alpha_ne*180.0d0/PI - 10.0d0) < 1.0d0 &
             !    .and. abs(lambda*180.0d0/PI) < 0.5d0 .and. nres == -1) then
@@ -642,9 +783,20 @@ implicit none
             ! -----------------------------------------------------------------
             ! Diffusion coefficient integrand
             ! -----------------------------------------------------------------
-            if (abs(vpar - dw_dk_par) < 1.0d-3 * abs(vpar) &
-                .or. (theta * 180.0/PI) > theta_max_eff &
-                .or. theta_min > theta_max_eff) then
+            acct_status = 0
+            acct_N      = -1.0d0
+
+            if (theta_min > theta_max_eff) then
+                acct_status = 5
+            else if ((theta * 180.0/PI) > theta_max_eff) then
+                acct_status = 4
+            else if (abs(vpar - dw_dk_par) < 1.0d-3 * abs(vpar)) then
+                acct_status = 3
+            else if (Fsq <= 0.0d0) then
+                acct_status = 6
+            end if
+
+            if (acct_status /= 0) then
 
                 D_tmp(1) = 0.0
                 D_tmp(2) = 0.0
@@ -658,42 +810,40 @@ implicit none
                              - (sin(alpha_ne))**2.0)**2.0) &
                           / abs(1.0 - dw_dk_par/vpar)
 
-                !if (E > 1.9d0 .and. E < 2.0d0 .and. abs(alpha_ne*180.0d0/PI - 10.0d0) < 1.0d0 &
-                 !   .and. nres == -1) then
-                  !  open(90, file='deltan_nresmin1.txt', status='unknown', position='append')
-                   ! write(90,*) 'DispType=', trim(DP%disp_type), ' lambda(deg)=', lambda*180.0d0/PI, &
-                    !            ' dw_dk_par=', dw_dk_par, ' vpar=', vpar, &
-                     !           ' denom=', abs(1.0d0 - dw_dk_par/vpar), ' Delta_n=', Delta_n
-                    !close(90)
-                !end if
-
-                ! G1: frequency-weighted wave power spectral density
                 call PowerSpectralDensity(L, lambda, omega_e_eq, omega, &
-                          omega_m, omega_lc, omega_uc, d_omega, &
-                          PSD)
+                          omega_m, omega_lc, omega_uc, d_omega, PSD)
                 G1 = omega_e * PSD
 
-                call int_N_omega(alpha, E, L, lambda, Theta_function, &
-                                theta_max_eff, nres, omega, k_vec, &
-                                omega_e, omega_pe, omega_i, omega_pi, &
-                                res_cone, N_of_omega, whamp_curve)
+                block
+                    real*8 :: theta_max_N
+                    if (ConeTruncateN) then
+                        theta_max_N = theta_max_eff
+                    else
+                        theta_max_N = theta_max
+                    end if
+                    acct_iroot     = i
+                    acct_nres_ctx  = nres
+                    acct_theta_res = theta * 180.0d0/PI
+                    call int_N_omega(alpha, E, L, lambda, Theta_function, &
+                                    theta_max_N, nres, omega, k_vec, &
+                                    omega_e, omega_pe, omega_i, omega_pi, &
+                                    res_cone, N_of_omega, whamp_curve)
+                end block
 
-                !if (E > 1.9d0 .and. E < 2.0d0) then   ! ~1 MeV normalized
-                 !   open(93, file='weightfn_debug.txt', status='unknown', position='append')
-                  !  write(93,*) 'alpha(deg)=', alpha*180.0d0/PI, ' lambda(deg)=', lambda*180.0d0/PI, &
-                   !             ' N_of_omega=', N_of_omega, ' G1=', G1, &
-                    !            ' theta_max_eff=', theta_max_eff, ' theta_min=', theta_min
-                 !   close(93)
-                !end if
+                acct_N = N_of_omega
 
-                G2 = (exp(-((X - X_m1)/X_w1)**2.0) &
-                    + theta_q * exp(-((X - X_m2)/X_w2)**2.0)) / N_of_omega
+                if (N_of_omega > 0.0d0) then
+                    G2 = (exp(-((X - X_m1)/X_w1)**2.0) &
+                        + theta_q * exp(-((X - X_m2)/X_w2)**2.0)) / N_of_omega
+                else
+                    ! No wave power in the permitted theta range at this omega:
+                    ! the resonance cannot contribute.
+                    G2 = 0.0d0
+                end if
 
-                ! G3: normalised wave amplitude factor
                 dB_local = Bw
                 G3 = omega_e / (gamma1**2.0) * (dB_local / B_local)**2.0
 
-                ! G4: pitch-angle coupling factor (links D_aa to D_ap and D_pp)
                 G4 = sin(alpha_ne) * cos(alpha_ne) &
                      / (real(nres)*real(sqe)*omega_e/(gamma1*omega) &
                         - (sin(alpha_ne))**2.0)
@@ -702,14 +852,12 @@ implicit none
                 D_tmp(2) = D_tmp(1) * G4
                 D_tmp(3) = D_tmp(2) * G4
 
-            !if (E > 0.055d0 .and. E < 0.062d0 .and. abs(alpha_ne*180.0d0/PI - 10.0d0) < 1.0d0 &
-            !    .and. abs(lambda*180.0d0/PI) < 0.5d0) then
-            !    open(90, file='dintegrad_a0005_30kev10deg.txt', status='unknown', position='append')
-            !    write(90,*) 'nres=', nres, ' D_tmp1=', D_tmp(1)
-            !    close(90)
-            !end if
-
             end if
+
+            !call acct_write(DispersionType, my_rank_cached, acct_status, i, nres, &
+            !                L, E, alpha*180.0d0/PI, lambda*180.0d0/PI, &
+            !                theta*180.0d0/PI, theta_max_eff, &
+            !                omega, n_ref_ind2, Fsq, acct_N, theta_cone, D_tmp(1))
 
             WeightValue(1) = WeightValue(1) + D_tmp(1)
             WeightValue(2) = WeightValue(2) + D_tmp(2)
@@ -718,11 +866,11 @@ implicit none
         end if
 
     end do
-
-    call cpu_time(t_prof_2)
-    t_weight_total = t_weight_total + (t_prof_2 - t_prof_1)
+#ifdef PROFILE
+    call system_clock(t_prof_2, prof_rate)
+    t_weight_total = t_weight_total + real(t_prof_2 - t_prof_1, 8) / real(prof_rate, 8)
     n_weight_calls = n_weight_calls + 1
-
+#endif
     return
 
 end subroutine WeightFunction

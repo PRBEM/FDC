@@ -8,13 +8,12 @@
 !   parallel computation via mpi_parallel.
 !
 !   The program computes bounce-averaged quasi-linear diffusion coefficients
-!   (D_aa, D_ap, D_pp, D_aE, D_EE) on a (L, E, alpha) grid for a specified
+!   (D_aa, D_ap, D_pp) on a (L, E, alpha) grid for a specified
 !   wave environment and plasma model.
 !
 !   The formulation follows:
 !     Albert, J. M. (2007), Simple approximations of quasi-linear diffusion
 !     coefficients, J. Geophys. Res., 112, A12202, doi:10.1029/2007JA012551
-!   which builds on the PADIE framework of:
 !     Glauert, S. A., and R. B. Horne (2005), Calculation of pitch angle and
 !     energy diffusion coefficients with the PADIE code, J. Geophys. Res.,
 !     110, A04206, doi:10.1029/2004JA010851
@@ -39,8 +38,19 @@
 !   Line 38: lam_min, lam_max [degrees]
 !   Line 40: BwType, Bw_Input [pT]
 !   Line 42: ThetaType, Theta_Input(7)
-!   Line 44: DispersionType (COLD or HOT)
-!   Line 46: DiffusionFormulation (LYONS or CUNNINGHAM)
+!   Line 44: DispersionType (COLD, HOT or EMIC)
+!   Line 46: DiffusionFormulation (LYONS or CUNNINGHAM) -- optional, see below
+!   Then, only for DispersionType = HOT, the hot plasma species block:
+!            k_min_exp, k_max_exp, n_species
+!            followed by one line per species:
+!            mass_number, density_fraction, T_par_keV, T_anis
+!
+!   The file is read POSITIONALLY: every parameter block consists of a
+!   comment line followed by a value line, and a missing block shifts every
+!   subsequent read. The only exceptions are the two blocks at the end:
+!   DiffusionFormulation defaults to LYONS if absent (for backward
+!   compatibility with older input files), and the hot plasma block is read
+!   only for DispersionType = HOT, where it is mandatory.
 !
 ! INPUT CONVENTIONS:
 !   - L is given as L*10 (e.g. 30 = L=3.0) and divided by 10 on reading
@@ -69,15 +79,32 @@
 !       JUPITER: 4.2818e-4 T
 !       SATURN:  0.2e-4 T
 !       DIPOLE:  read from input file in nT, converted to T (* 1e-9)
-!   - DispersionType is hardcoded to 'COLD' (cold plasma dispersion relation).
-!     This is the only currently implemented option. When the hot plasma
-!     (WHAMP) interface is implemented, DispersionType should be read from
-!     the input file instead. See Module_Dispersion.f90 for the interface.
-!   - The DIPOLE planet case in B_field does not apply the L^3 scaling,
-!     making the field independent of L-shell. This may be intentional for
-!     uniform-field test cases, but should be verified before using.
+!   - DispersionType selects the dispersion relation: COLD (cold plasma),
+!     HOT (kinetic, via WHAMP; see Module_Dispersion.f90) or EMIC.
+!   - The DIPOLE planet case in B_field deliberately omits the L^3 scaling:
+!     the field read from the input file is then the equatorial field AT the
+!     L-shell of interest, and L only labels the field line. Use this when
+!     the field strength is prescribed directly, e.g. for code comparisons.
+!   - LOCAL MODE: lam_min = lam_max = 0 switches off the bounce averaging and
+!     returns the local equatorial coefficients (see D_ba). The log records
+!     'LOCAL MODE' when it is active; any other lam_min = lam_max is rejected.
+!
+! COMPILE SWITCHES (all off by default; see build.sh):
+!   -DPROFILE        per-rank timings for Integration_lambda, Roots_finder,
+!                    WeightFunction and int_N_omega
+!   -DDIAG           diagnostic output (accounting, N(omega) integrand,
+!                    WHAMP surface dumps)
+!   -DROOTS_POLY     cold resonant roots from the degree-10 polynomial
+!                    instead of the scan in Roots_scan.f90
+!   -DNO_THETA_SKIP  do not skip theta values that cannot resonate
+!   -DINTN_ORIG      original N(omega) loop instead of int_N_cold_fast
+!   -DOLD_BM         mirror field from the shortened mirror latitude
+!   -DROOTCHECK      run both root finders and log differences
+!   None of these change results except -DOLD_BM; the others are
+!   performance or diagnostic switches.
 !
 ! ==============================================================================
+
 
 program main
 use constants
@@ -300,6 +327,21 @@ implicit none
     write(unit_log,"('Minimum of latitude:' 4X, f5.2, 1X 'Degree')") lam_min
     write(unit_log,"('Maximum of latitude:' 4X, f5.1, 1X 'Degree')") lam_max
 
+    ! Local mode: lam_min = lam_max gives local D at that latitude, with no
+    ! bounce averaging. Only the equator is supported: at lambda /= 0 the
+    ! local D refers to the local pitch angle, but the output is labelled
+    ! with the equatorial one.
+    local_mode = (abs(lam_max - lam_min) < 1.0d-12)
+    if (local_mode) then
+        if (abs(lam_min) > 1.0d-12) then
+            write(unit_log,"('ERROR: local mode (lam_min = lam_max) ' // &
+                  'requires lam_min = 0 (equator only).')")
+            write(*,*) 'ERROR: local mode (lam_min = lam_max) requires lam_min = 0.'
+            stop
+        end if
+        write(unit_log,"('LOCAL MODE: equatorial local D, no bounce averaging')")
+    end if
+
     ! -------------------------------------------------------------------------
     ! Wave amplitude model
     ! -------------------------------------------------------------------------
@@ -349,7 +391,7 @@ implicit none
     ! -------------------------------------------------------------------------
     read(unit_input,*) char_tmp
     read(unit_input,*) DispersionType
-    DispersionType = trim(DispersionType)
+    DispersionType = to_upper(trim(DispersionType))
     select case(DispersionType)
         case('COLD', 'HOT', 'EMIC')
             write(unit_log,"('Dispersion type:'4x,A10)") DispersionType

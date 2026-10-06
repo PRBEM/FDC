@@ -4,8 +4,8 @@
 !
 ! PURPOSE:
 !   Returns the normalised wave power spectral density (PSD) at a given
-!   wave frequency (Freq), for the spectral model specified by thw frequency
-!   distribution in the input file.
+!   wave frequency (Freq), for the spectral model selected by
+!   FreqDistribution in the input file.
 !
 !   The PSD is normalised so that:
 !     integral[ PSD(omega) * domega ] from omega_lc to omega_uc = 1
@@ -55,6 +55,12 @@
 !     norm_lower and norm_upper hold these antiderivative values (renamed
 !     from erf1/erf2 in the original, which was misleading since they are
 !     not error functions in the polynomial cases).
+!   - The GAUSSIAN normalisation is the standard truncated-Gaussian form,
+!     e.g. Albert (2005), Eq. (8): the spectrum exp(-((omega-omega_m)/d_omega)^2)
+!     divided by sqrt(pi)*d_omega/2 * [erf((omega_UC-omega_m)/d_omega)
+!     + erf((omega_m-omega_LC)/d_omega)]. Note that d_omega is the Gaussian
+!     half-width in this convention, not a standard deviation; codes that
+!     use sigma instead differ by a factor sqrt(2) in the width.
 !   - A PSD floor of 1e-20 is applied in some polynomial models to avoid
 !     numerical issues with near-zero or negative PSD values at the band
 !     edges. It is not applied in the GAUSSIAN case.
@@ -98,7 +104,7 @@ implicit none
             call errorfunction(mag1, erf1)
             call errorfunction(mag2, erf2)
 
-            PSD = 2.0 * exp(-((Freq - omega_m)/d_omega)**2.0) &
+            PSD = 2.0 * exp(-((Freq - omega_m)/d_omega)**2) &
                   / (sqrt(PI) * d_omega * (erf1 + erf2))
 
         ! ----------------------------------------------------------------------

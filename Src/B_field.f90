@@ -30,13 +30,14 @@
 !   f_function - Returns f(lambda) = B(lambda)/B_eq for a dipole field
 !
 ! NOTES:
-!   - For PT = 'EARTH', 'JUPITER', 'SATURN': uses the full dipole formula
-!     B0 * f(lambda) / L^3, where B0 is the planet's equatorial surface
+!   - For PT = 'EARTH', 'JUPITER', 'SATURN': the full dipole formula
+!     B0 * f(lambda) / L^3 is used, with B0 the planet's equatorial surface
 !     field (set in main based on PT).
-!   - For PT = 'DIPOLE': omits the L^3 factor, returning B0 * f(lambda).
-!     This means the field does not vary with L-shell, only with latitude.
-!     This may be intentional for uniform-field test cases, or a bug.
-!     Verify before using PT='DIPOLE' in production runs.
+!   - For PT = 'DIPOLE': the L^3 factor is omitted, so B0 is interpreted as
+!     the equatorial field AT the L-shell of interest rather than at the
+!     planetary surface. This is the mode to use when the field strength is
+!     prescribed directly (e.g. for code comparisons), and L then only
+!     labels the field line.
 !   - KNOWN LIMITATION: f_function encodes the dipole geometry. If B_field
 !     is modified to return non-dipolar field values (e.g. from satellite
 !     measurements), Local_alpha must also be updated to use
@@ -57,9 +58,9 @@ implicit none
 
     select case(PT)
         case('JUPITER', 'EARTH', 'SATURN')
-            Blocal = B0 * f_value / (L**3.0)
+            Blocal = B0 * f_value / (L**3)
         case('DIPOLE')
-            ! Note: L^3 factor omitted, so the field is independent of L-shell.
+            ! B0 is the equatorial field at this L-shell, so no L^3 scaling
             Blocal = B0 * f_value
         case default
             write(*,*) 'ERROR: Invalid Planet = ', trim(PT)

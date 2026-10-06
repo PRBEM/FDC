@@ -56,5 +56,7 @@ Denton06, 0.0, -2.0
 !!!!!!!!!ThetaType,Theta_Input (center, width, min, max) in unit of Degree
 ObliqueHiss,  0.0 , 30.0 , 0.0 , 30.0 , 0.0 , 70.0, 0.0
 
+!!!!!!!!!DispersionType
+COLD
 
 

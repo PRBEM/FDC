@@ -15,9 +15,13 @@
 !   group velocity along the wave vector. The integral runs from theta_min
 !   to theta_max_eff using the trapezoidal rule.
 !
-!   Dispersion properties (n^2 and dw/dk) are obtained via
-!   Get_dispersion_properties from module dispersion, which currently
-!   implements the cold plasma (Stix) formulation.
+!   COLD: the Stix parameters and their omega-derivatives are computed once
+!   before the loop, and the integral is evaluated by int_N_cold_fast, which
+!   caches the theta grid between calls (-DINTN_ORIG selects the explicit
+!   loop below instead, for comparison).
+!   HOT/EMIC: n^2 and dw/dk are interpolated from the WHAMP dispersion
+!   surface in the loop below, with a tolerance fallback and a targeted
+!   rescue at the curve boundaries.
 !
 ! INPUTS:
 !   alpha          - Equatorial electron pitch angle [radians]
@@ -48,22 +52,30 @@
 !   N_of_omega     - Normalisation factor N(omega) [rad]
 !
 ! CALLS:
-!   Get_dispersion_properties - Computes n^2 and dw/dk (module dispersion)
+!   cold_plasma_parameters       - Stix R, L, P, S, D at omega
+!   cold_plasma_stix_derivatives - their omega-derivatives
+!   int_N_cold_fast              - the COLD integral (fast path)
+!   get_whamp_point              - targeted rescue for HOT/EMIC
 !
 ! MODULE DEPENDENCIES:
 !   constants  - PI, nint_N, nint_N_res_cone
 !   dispersion - Get_dispersion_properties, DispersionProperties
 !
 ! NOTES:
-!   - If n^2 < 0 at a given theta point (evanescent wave), that point
-!     contributes zero to the integral.
-!   - A finer integration grid (nint_N_res_cone points) is used when
-!     res_cone = 'Y', to handle the near-singularity of the dispersion
-!     relation close to the resonance cone angle.
-!   - omega_e, omega_pe, omega_i, omega_pi are now passed explicitly as
-!     arguments rather than read from module variables. This replaces the
-!     previous implicit dependency on module variables being pre-populated
-!     by WeightFunction before this routine is called.
+!   - theta_max_eff is the upper limit actually used: it equals theta_max
+!     unless the resonance cone truncates the range (ConeTruncateN,
+!     cone_backoff in Module_Constants), in which case res_cone = 'Y' and
+!     the finer grid nint_N_res_cone is used.
+!   - N(omega) does NOT converge when the cone lies inside the integration
+!     range: the integrand diverges there like (theta_cone - theta)^(-5/2),
+!     so the value is set by where the integral is truncated, not by the
+!     number of points. Increasing nint_N does not help.
+!   - If theta_max - theta_min is below 1e-10 (parallel propagation only),
+!     N = 1 is returned and the integral is skipped.
+!   - The arguments alpha, E, L, lambda and nres are not used in the
+!     computation; they exist only for the -DDIAG output. N(omega) depends
+!     on the frequency, the local plasma and the theta distribution alone,
+!     which is what makes the result cacheable per (L, lambda).
 !
 ! MODIFIED: 2011-10-12 Xudong - revised refractive index and dw/dk calculation
 !           2011-10-24 Xudong - switched to lower-sign branch of dispersion
@@ -74,7 +86,9 @@ subroutine int_N_omega(alpha, E, L, lambda, Theta_function, theta_max_eff, &
                        res_cone, N_of_omega, whamp_curve)
 use constants
 use dispersion
+use accounting
 implicit none
+    include "mpif.h"
 
     real*8, intent(in)  :: alpha, E, L, lambda, Theta_function(7)
     real*8, intent(in)  :: theta_max_eff, omega, k_vec_res
@@ -100,12 +114,27 @@ implicit none
     real*8 :: R_stix, L_stix, P_stix, S_stix, D_stix
     real*8 :: dPdw_stix, dSdw_stix, dRdw_stix, dLdw_stix
 
-    real*8 :: t_prof_1, t_prof_2
+    integer(8) :: t_prof_1, t_prof_2, prof_rate
 
     integer, save :: call_count = 0
     integer, save :: n_debug_writes = 0
 
-    call cpu_time(t_prof_1)
+    integer, save :: my_rank_cached = -1
+    integer :: mpi_ierr
+
+    integer           :: intn_st, intn_path
+    integer, save     :: intn_call = 0
+    logical           :: intn_log
+    character(len=80) :: intn_file
+    real*8            :: intn_dwdk, intn_n2
+
+#ifdef PROFILE
+    call system_clock(t_prof_1)
+#endif
+
+    if (my_rank_cached < 0) then
+        call MPI_Comm_rank(MPI_COMM_WORLD, my_rank_cached, mpi_ierr)
+    end if
     call_count = call_count + 1
 
     ! -------------------------------------------------------------------------
@@ -154,16 +183,37 @@ implicit none
                                           dPdw_stix, dSdw_stix, dRdw_stix, dLdw_stix)
     end if
 
-    !if (n_debug_writes < 20 .and. E > 1.0d0) then   ! E>1.0 → >511 keV
-    !    n_debug_writes = n_debug_writes + 1
-    !    open(97, file='resonance_debug_highE.txt', status='unknown', position='append')
-    !    write(97,*) 'call=', call_count, &
-    !                ' E_keV=', E*511.0d0, &
-    !                ' alpha(deg)=', alpha*180.0d0/PI, &
-    !                ' omega(Hz)=', omega/(2.0d0*PI), &
-    !                ' n_k=', whamp_curve%n_k
-    !    close(97)
-    !end if
+#ifdef DIAG
+    ! Diagnostic: logs the N(omega) integrand for one specific grid point
+    ! (see the commented-out block further down). Off by default, since the
+    ! condition would otherwise be evaluated on every call and the fast cold
+    ! path below is skipped whenever intn_log is true.
+    intn_log = (E > 0.0037d0 .and. E < 0.0041d0) &
+         .and. (abs(alpha*180.0d0/PI - 60.0d0) < 1.0d0) &
+         .and. (abs(lambda*180.0d0/PI) < 0.5d0) &
+         .and. (nres == 0)
+    if (intn_log) intn_call = intn_call + 1
+#else
+    intn_log = .false.
+#endif
+
+#ifndef INTN_ORIG
+    ! Fast cold path (int_N_cold_fast.f90). The loop below is still used for
+    ! HOT/EMIC, with -DINTN_ORIG, and while the intn diagnostics are active.
+    if (DispersionType == 'COLD' .and. .not. intn_log) then
+        call int_N_cold_fast(omega, theta_min / 180.0 * PI, step, nint_N_tmp, &
+                             X_m1, X_w1, X_m2, X_w2, theta_q, &
+                             R_stix, L_stix, P_stix, S_stix, &
+                             dPdw_stix, dSdw_stix, dRdw_stix, dLdw_stix, &
+                             c, N_of_omega)
+#ifdef PROFILE
+        call system_clock(t_prof_2, prof_rate)
+        t_intn_total = t_intn_total + real(t_prof_2 - t_prof_1, 8) / real(prof_rate, 8)
+        n_intn_calls = n_intn_calls + 1
+#endif
+        return
+    end if
+#endif
 
     do i = 1, nint_N_tmp
         theta = theta_min / 180.0 * PI + step * (real(i) - 1.0)
@@ -176,6 +226,9 @@ implicit none
                 real*8  :: w_theta, omega_lo_t, omega_hi_t, frac
                 logical :: found, valid_lo, valid_hi
                 found = .false.
+                intn_path = 0
+                DP%n_ref_ind2 = -1.0d0
+                DP%dw_dk      = 0.0d0
 
                 ! Find bracketing theta indices and interpolation weight
                 i_theta_lo = 1
@@ -213,7 +266,7 @@ implicit none
                                  w_theta*whamp_curve%omega(i_theta_hi,i_k-1)
                     omega_hi_t = (1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,i_k)   + &
                                  w_theta*whamp_curve%omega(i_theta_hi,i_k)
-                    if (omega_lo_t <= omega .and. omega_hi_t >= omega) then
+                    if ((omega_lo_t - omega) * (omega_hi_t - omega) <= 0.0d0) then
                         frac = (omega - omega_lo_t) / (omega_hi_t - omega_lo_t)
                         DP%n_ref_ind2 = (whamp_curve%k(i_k-1)*c/omega_lo_t)**2.0d0 + &
                             frac*((whamp_curve%k(i_k)*c/omega_hi_t)**2.0d0 - &
@@ -228,6 +281,7 @@ implicit none
                             DP%dw_dk = -DP%dw_dk
                         end if
                         found = .true.
+                        intn_path = 1
                         if (abs(DP%dw_dk) < 1.0d-6 * c) then
                             Ntmp = 0.0d0
                             found = .false.
@@ -270,6 +324,7 @@ implicit none
                                            w_theta*whamp_curve%dw_dk(i_theta_hi,i_last_valid)
                                 if (k_vec_res < 0.0d0) DP%dw_dk = -DP%dw_dk
                                 found = .true.
+                                intn_path = 2
                                 if (abs(DP%dw_dk) < 1.0d-6 * c) then
                                     found = .false.
                                 end if
@@ -279,6 +334,7 @@ implicit none
                                            w_theta*whamp_curve%dw_dk(i_theta_hi,i_first_valid)
                                 if (k_vec_res < 0.0d0) DP%dw_dk = -DP%dw_dk
                                 found = .true.
+                                intn_path = 2
                                 if (abs(DP%dw_dk) < 1.0d-6 * c) then
                                     found = .false.
                                 end if
@@ -289,7 +345,7 @@ implicit none
 
                 if (.not. found) then
                     block
-                        real*8          :: n2_targeted, dw_targeted
+                        real*8          :: n2_targeted, dw_targeted, omega_found
                         complex(kind=8) :: EFL_targeted(3)
                         complex(kind=8) :: BFL_targeted(3)
                         logical         :: valid_targeted
@@ -297,25 +353,36 @@ implicit none
                                             theta, abs(k_vec_res), omega, &
                                             n2_targeted, dw_targeted, EFL_targeted, &
                                             BFL_targeted, valid_targeted)
-                        if (valid_targeted) then
-                            DP%n_ref_ind2 = n2_targeted
-                            DP%dw_dk      = dw_targeted
-                            if (k_vec_res < 0.0d0) DP%dw_dk = -DP%dw_dk
-                            found = .true.
+                        if (valid_targeted .and. n2_targeted > 0.0d0) then
+                            omega_found = abs(k_vec_res) * c / sqrt(n2_targeted)
+                            if (abs(omega_found - omega) <= 1.0d-3 * omega) then
+                                DP%n_ref_ind2 = n2_targeted
+                                DP%dw_dk      = dw_targeted
+                                if (k_vec_res < 0.0d0) DP%dw_dk = -DP%dw_dk
+                                found = .true.
+                                intn_path = 3
+                            end if
                         end if
                     end block
                 end if
 
+                if (.not. found) intn_path = 0
+
                 if (.not. found) then
                     Ntmp = 0.0d0
+                    intn_st = 1
                 else if (DP%n_ref_ind2 <= 0.0d0 .or. abs(DP%dw_dk) < 1.0d-6 * c) then
                     Ntmp = 0.0d0
+                    intn_st = 2
                 else
                     Ntmp = sin(theta) &
                         * (exp(-((X - X_m1)/X_w1)**2.0) &
                             + theta_q * exp(-((X - X_m2)/X_w2)**2.0)) &
                         * DP%n_ref_ind2 * c / abs(DP%dw_dk)
+                    intn_st = 0
                 end if
+                intn_n2   = DP%n_ref_ind2
+                intn_dwdk = DP%dw_dk
             end block
 
         else
@@ -325,6 +392,9 @@ implicit none
                                               DP%n_ref_ind2)
             if (DP%n_ref_ind2 < 0.0) then
                 Ntmp = 0.0
+                intn_st = 3
+                intn_n2 = DP%n_ref_ind2
+                intn_dwdk = 0.0d0
             else
                 k_vec = sqrt(DP%n_ref_ind2) * omega / c
                 block
@@ -348,6 +418,10 @@ implicit none
                        * (exp(-((X - X_m1)/X_w1)**2.0) &
                           + theta_q * exp(-((X - X_m2)/X_w2)**2.0)) &
                        * DP%n_ref_ind2 * c / abs(DP%dw_dk)
+                intn_st   = 0
+                intn_path = 9
+                intn_n2   = DP%n_ref_ind2
+                intn_dwdk = DP%dw_dk
             end if
         end if
 
@@ -360,11 +434,11 @@ implicit none
     end do
 
     N_of_omega = N_of_omega * step
-
-    call cpu_time(t_prof_2)
-    t_intn_total = t_intn_total + (t_prof_2 - t_prof_1)
+#ifdef PROFILE
+    call system_clock(t_prof_2, prof_rate)
+    t_intn_total = t_intn_total + real(t_prof_2 - t_prof_1, 8) / real(prof_rate, 8)
     n_intn_calls = n_intn_calls + 1
-
+#endif
     return
 
 end subroutine int_N_omega

@@ -67,11 +67,22 @@
 !   constants  - Physical constants (qe, me, c, RAD, ...),
 !                and control parameters:
 !                  NresType    : resonance order mode ('CONSTANT' or 'MR12')
-!                  nres_min    : minimum resonance harmonic (module default for
-!                                'CONSTANT' mode; set locally for 'MR12')
-!                  nres_max    : maximum resonance harmonic (same)
+!                  nres_min    : minimum resonance harmonic ('CONSTANT' mode)
+!                  nres_max    : maximum resonance harmonic ('CONSTANT' mode)
 !
 ! NOTES:
+!   - In local mode (lam_min = lam_max = 0) the same columns hold the LOCAL
+!     equatorial coefficients; D_ba returns them without bounce averaging.
+!   - HOT/EMIC: the WHAMP dispersion curves are built here, once per lambda
+!     grid point, and passed down so that every harmonic reuses them. They
+!     are rebuilt on every call, i.e. for every (L, E, alpha) point, although
+!     they depend only on (L, lambda): the same curves are recomputed for all
+!     NE energies and all NPA pitch angles of a given L. Reusing them across
+!     a whole (L, alpha) column would cut the cost of a HOT run by close to a
+!     factor NE. Note that lambda_m, and therefore the lambda grid, does
+!     depend on alpha.
+!   - NresType = 'MR12' overwrites nres_min and nres_max locally, not in
+!     module constants, so the values read from the input file survive.
 !   - Energy is converted from keV to normalised units internally:
 !       E = E_keV * 1e3 * qe / (me * c^2)   (= gamma - 1, dimensionless)
 !   - Pitch angle is converted from degrees to radians internally.
@@ -99,15 +110,15 @@ implicit none
     real*8  :: L, E, alpha_eq
 
     integer :: i, resonmax, nres, I_nres
+    integer :: nres_lo, nres_hi          ! harmonic range for this grid point
 
     type(WHAMPCurve), allocatable :: whamp_curves_shared(:)
     real*8, allocatable :: lambda_grid_shared(:)
     integer :: n_lambda_shared
-    real*8 :: lambda_m_shared, lambda_min_shared, B_m_shared, delta_lambda_shared
+    real*8 :: lambda_m_shared, lambda_min_shared, delta_lambda_shared
     real*8 :: fce_khz_s, fpe_khz_s, B_local_s, Ne_local_s
     real*8 :: Theta_function_s(7)
     integer :: jj
-    logical, save :: dispersion_dumped = .false.
 
     do i = 1, local_rows2
 
@@ -116,8 +127,8 @@ implicit none
         alpha_eq = InputData2(i,3) * RAD
 
         if (DispersionType == 'HOT' .or. DispersionType == 'EMIC') then
+            ! lambda grid for the shared curves: the same grid D_ba will use
             call Lambda_mirror_new(alpha_eq, lambda_m_shared)
-            call B_field(L, lambda_m_shared, B_m_shared)
             lambda_min_shared = lam_min * RAD
             if (lambda_m_shared/RAD >= lam_max) then
                 lambda_m_shared = lam_max * RAD
@@ -154,11 +165,7 @@ implicit none
                                         Theta_function_s(6)*PI/180.0d0, &
                                         whamp_curves_shared(jj))
             end do
-            
-            !if (.not. dispersion_dumped .and. DispersionType == 'HOT') then
-            !    dispersion_dumped = .true.
-            !    call dump_dispersion_curve(L, whamp_curves_shared(1))
-            !end if
+
         else
             ! COLD case: allocate trivially so the array is always in a valid state
             if (allocated(whamp_curves_shared)) then
@@ -182,17 +189,6 @@ implicit none
             whamp_curves_shared(1)%n_theta = 0
         end if
 
-        !if (E > 0.18d0 .and. E < 0.2d0 .and. abs(alpha_eq*180.0d0/PI - 56.67d0) < 1.0d0) then
-        !    block
-        !        integer :: i_theta_dbg
-        !        open(84, file='valid_pattern_a0005.txt', status='unknown', position='append')
-        !        do i_theta_dbg = 1, whamp_curves_shared(1)%n_theta
-        !            write(84,'(80L2)') whamp_curves_shared(1)%valid(i_theta_dbg,:)
-        !        end do
-        !        close(84)
-        !    end block
-        !end if
-
         BavDaa = 0.0
         BavDap = 0.0
         BavDaE = 0.0
@@ -204,15 +200,15 @@ implicit none
             select case(NresType)
 
                 case('CONSTANT')
-                    ! nres_min and nres_max are used as set in module constants
-                    ! (via the input file).
-                    nres_min = nres_min
-                    nres_max = nres_max
+                    ! range as read from the input file
+                    nres_lo = nres_min
+                    nres_hi = nres_max
 
                 case('MR12')
+                    ! range estimated per grid point (Mourenas & Ripoll 2012)
                     call resonanceorder(E, L, resonmax)
-                    nres_min = -resonmax
-                    nres_max =  resonmax
+                    nres_lo = -resonmax
+                    nres_hi =  resonmax
 
                 case default
                     write(*,*) 'ERROR: Invalid NresType = ', trim(NresType)
@@ -221,7 +217,7 @@ implicit none
 
             end select
 
-            do I_nres = nres_min, nres_max
+            do I_nres = nres_lo, nres_hi
                 nres = I_nres
                 call D_ba(alpha_eq, E, L, nres, BavRate, whamp_curves_shared, lambda_grid_shared, n_lambda_shared)
                 BavDaa = BavDaa + BavRate(1)
@@ -231,7 +227,7 @@ implicit none
 
             ! Derive energy-related diffusion coefficients from momentum ones
             BavDaE = BavDap * (E + 2.0) / (E + 1.0)
-            BavDEE = BavDpp * ((E + 2.0)**2.0) / ((E + 1.0)**2.0)
+            BavDEE = BavDpp * ((E + 2.0)**2) / ((E + 1.0)**2)
 
             ! Convert s^-1 to day^-1
             BavDaa = BavDaa * 24.0 * 3600.0

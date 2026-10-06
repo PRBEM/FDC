@@ -3,43 +3,72 @@
 ! ==============================================================================
 !
 ! PURPOSE:
-!   Provides a unified interface for evaluating cold or hot plasma dispersion
-!   properties at a given wave frequency, wave normal angle, and local plasma
-!   state. The dispersion model is selected at runtime via the DispersionType
-!   flag in module constants ('COLD' or 'HOT').
+!   Provides the dispersion physics used throughout the code: the cold plasma
+!   (Stix) relation, the kinetic relation via WHAMP, the EMIC band logic, and
+!   the derived quantities built on them (group velocity, polarisation,
+!   Jacobians). The model in use is selected by DispersionType in module
+!   constants ('COLD', 'HOT' or 'EMIC').
 !
-!   Currently implemented:
-!     'COLD' - Cold plasma dispersion relation (Stix formulation)
-!
-!   Planned but not yet implemented:
-!     'HOT'  - Hot plasma dispersion relation via WHAMP
-!
-!   This module is intended to be the single point of change when adding
-!   new dispersion models. WeightFunction and any other caller should obtain
-!   all dispersion quantities exclusively through Get_dispersion_properties
-!   and Get_polarisation_factor, and should have no direct knowledge of
-!   which model is active.
+!   STATUS: COLD and HOT are in production use and validated. EMIC is work
+!   in progress: unvalidated and incomplete, so EMIC results should not be
+!   used without checking the implementation first.
 !
 ! CONTENTS:
-!   DispersionProperties        - Derived type carrying dispersion outputs
-!   Get_dispersion_properties   - Dispatcher: selects cold or hot plasma path
-!   Get_polarisation_factor     - Computes Fsq from a DispersionProperties instance
-!   cold_plasma_parameters      - Computes Stix parameters R, L, P, S, D
-!   cold_plasma_group_velocity  - Computes dw/dk from analytic Stix derivatives
-!   cold_plasma_polarisation    - Computes Fsq from Stix parameters and Bessel functions
+!   Derived types
+!     DispersionProperties   - dispersion outputs for one evaluation point
+!     WHAMPCurve             - tabulated omega(theta, k) surface for one
+!                              local plasma state
+!     WHAMPCurveCache        - set of curves along a field line, keyed by
+!                              (L, alpha); WHAMP_CACHE_SIZE entries, LRU
+!
+!   Dispatch
+!     Get_dispersion_properties - cold or hot path for one (omega, k, theta)
+!     Get_polarisation_factor   - Fsq from a DispersionProperties instance
+!
+!   Cold plasma
+!     cold_plasma_parameters       - Stix R, L, P, S, D
+!     cold_plasma_parameters_multi - the same for several ion species
+!     cold_plasma_refractive_index - n^2 from the Stix parameters
+!     cold_plasma_stix_derivatives - d(R,L,P,S)/d omega
+!     cold_plasma_group_velocity   - dw/dk from the analytic derivatives
+!     cold_plasma_polarisation     - Fsq from Stix parameters and Bessel terms
+!     cold_plasma_efield_diag      - E-field eigenvector (-DDIAG only)
+!
+!   Hot plasma (WHAMP)
+!     get_whamp_dispersion   - builds a WHAMPCurve: WHAMP_N_THETA x WHAMP_N_K
+!                              kinetic solutions for one (fce, fpe)
+!     get_whamp_point        - single targeted solution, used as a rescue
+!                              when interpolation on the curve fails
+!     hot_plasma_polarisation- Fsq from WHAMP's E and B field components
+!
+!   EMIC  (WORK IN PROGRESS - unvalidated, incomplete)
+!     emic_band_bounds, emic_find_cutoff, emic_find_seed_omega
+!
+!   Cunningham formulation
+!     cunningham_jacobian    - Jacobian of the Cunningham (2023) kernel
+!
+!   Profiling accumulators (-DPROFILE): t_*_total, n_*_calls, summed per rank
+!   and printed by mpi_parallel.
 !
 ! MODULE DEPENDENCIES:
-!   constants  - Physical constants and DispersionType flag
+!   constants  - physical constants, DispersionType, WHAMP_N_K,
+!                WHAMP_N_THETA, N_max_hot, k_min/max_exp_val_input,
+!                hot_species_* configuration
 !
 ! NOTES:
-!   - This module replaces the inline Stix parameter, group velocity, and
-!     polarisation factor calculations that were previously embedded in
-!     WeightFunction, and the a1-a6 side effects previously written to
-!     module variables by Roots_finder.
-!   - module variables (R_stix, L_stix, P_stix, S_stix, D_stix) are no
-!     longer written as side effects after this refactoring. Any subroutine
-!     that previously read these from module variables (e.g. int_N_omega)
-!     will need to be updated in a future refactoring step.
+!   - The original intent was that callers obtain every dispersion quantity
+!     through Get_dispersion_properties and Get_polarisation_factor, with no
+!     knowledge of the active model. That holds for the cold path; for
+!     HOT/EMIC, WeightFunction, int_N_omega and D_local_n interpolate the
+!     WHAMPCurve inline (bracketing in theta and k, tolerance fallback,
+!     targeted rescue), in three near-identical copies. Moving that into a
+!     routine here would restore the intent and remove several hundred lines.
+!   - WHAMP curves are expensive: one call to get_whamp_dispersion solves
+!     WHAMP_N_THETA x WHAMP_N_K kinetic dispersion problems. They depend only
+!     on the local plasma state, i.e. on (L, lambda), not on energy or pitch
+!     angle, which is what the WHAMPCurveCache exploits.
+!   - The cold Stix parameters are no longer written to module variables as
+!     a side effect; they are returned through the argument list.
 !
 ! ==============================================================================
  
@@ -65,9 +94,8 @@ implicit none
 !     R, L, P, S, D  - Stix cold plasma parameters [-]
 !
 !   Hot plasma fields (populated when disp_type = 'HOT'):
-!     Fields to be determined once WHAMP interface is finalised.
-!     Commented out below to document intent without committing to an
-!     interface that may change.
+!     EFL, BFL       - wave E and B field components from WHAMP, used by
+!                      hot_plasma_polarisation
 !
 ! ==============================================================================
 type :: DispersionProperties
@@ -84,7 +112,7 @@ type :: DispersionProperties
     real*8 :: S             ! Stix S = (R+L)/2
     real*8 :: D             ! Stix D = (R-L)/2
  
-    ! Hot plasma (WHAMP) outputs (to be implemented)
+    ! Hot plasma (WHAMP) outputs
     complex(kind=8) :: EFL(3)   ! E field components from WHAMP
     complex(kind=8) :: BFL(3)   ! B field components from WHAMP
  
@@ -128,7 +156,10 @@ end type DispersionProperties
 !     constants
 !   - Only points where valid=.true. should be used for interpolation
 !   - For parallel propagation only (theta=0), n_theta=1
-!   - fce_khz and fpe_khz stored for reference/debugging
+!   - fce_khz and fpe_khz identify the plasma state the curve was built for;
+!     they are also the cache key used by WHAMPCurveCache
+!   - EFL and BFL carry the wave field components per (theta, k), used by
+!     hot_plasma_polarisation
 !
 ! ==============================================================================
 type :: WHAMPCurve
@@ -296,7 +327,7 @@ implicit none
                                           DP%n_ref_ind2, DP%R, DP%L, DP%P, DP%S, &
                                           Fsq)
         case('HOT', 'EMIC')
-            call hot_plasma_polarisation(alpha_ne, nres, &
+            call hot_plasma_polarisation(alpha_ne, nres, k_vec, theta, &
                                          BesselF1, BesselF2, BesselF3, &
                                          DP%EFL, DP%BFL, DP%n_ref_ind2, Fsq)
  
@@ -641,6 +672,105 @@ implicit none
     Fsq = abs(((F1*F2 + F3)**2.0) / ((F4*F5)**2.0 + F6**2.0))
  
 end subroutine cold_plasma_polarisation
+
+! ==============================================================================
+! SUBROUTINE: cold_plasma_efield_diag   (DIAGNOSTIC ONLY)
+! ==============================================================================
+!   Returns the cold-plasma E-field eigenvector in WHAMP's basis
+!   (e1 along k_perp, e2 = e3 x e1, e3 along B0) and the transverse
+!   fraction sin^2(theta_kE) = 1 - |E.khat|^2/|E|^2.
+!
+!   At T->0 this MUST agree with the same quantity derived from WHAMP's
+!   EFL/BFL. Used to test whether the WHAMP eigenvector pipeline is
+!   returning physically plausible polarisation at modest theta.
+!
+!   Null vector obtained as the cross product of two rows of the wave
+!   matrix M (valid because M is singular at the dispersion root).
+!   Overall complex phase is arbitrary; sin^2(theta_kE) is phase-invariant.
+! ==============================================================================
+subroutine cold_plasma_efield_diag(theta, n2_cold, R, L, P, S, D, &
+                                   E_cold, sin2_theta_kE_cold, ok)
+implicit none
+    real*8, intent(in)  :: theta, n2_cold, R, L, P, S, D
+    complex(kind=8), intent(out) :: E_cold(3)
+    real*8, intent(out) :: sin2_theta_kE_cold
+    logical, intent(out) :: ok
+
+    complex(kind=8) :: r1(3), r2(3), r3(3), v(3), vb(3)
+    complex(kind=8) :: E_par_k
+    real*8 :: st, ct, nrm, nrm_best, E_norm_sq
+    complex(kind=8), parameter :: ii = (0.0d0, 1.0d0)
+
+    ok = .false.
+    E_cold = (0.0d0, 0.0d0)
+    sin2_theta_kE_cold = -1.0d0
+    if (n2_cold <= 0.0d0) return
+
+    st = sin(theta)
+    ct = cos(theta)
+
+    ! Wave matrix rows: (n^2 dij - ni nj - eps_ij) E = 0,  k = n(sin,0,cos)
+    r1(1) = cmplx(S - n2_cold*ct*ct, 0.0d0, kind=8)
+    r1(2) = -ii*D
+    r1(3) = cmplx(n2_cold*st*ct, 0.0d0, kind=8)
+
+    r2(1) = ii*D
+    r2(2) = cmplx(S - n2_cold, 0.0d0, kind=8)
+    r2(3) = (0.0d0, 0.0d0)
+
+    r3(1) = cmplx(n2_cold*st*ct, 0.0d0, kind=8)
+    r3(2) = (0.0d0, 0.0d0)
+    r3(3) = cmplx(P - n2_cold*st*st, 0.0d0, kind=8)
+
+    ! Pick the row pair giving the best-conditioned null vector
+    nrm_best = 0.0d0
+    call cross3(r2, r3, v)
+    nrm = cnorm(v)
+    if (nrm > nrm_best) then
+        nrm_best = nrm
+        vb = v
+    end if
+    call cross3(r1, r3, v)
+    nrm = cnorm(v)
+    if (nrm > nrm_best) then
+        nrm_best = nrm
+        vb = v
+    end if
+    call cross3(r1, r2, v)
+    nrm = cnorm(v)
+    if (nrm > nrm_best) then
+        nrm_best = nrm
+        vb = v
+    end if
+
+    if (nrm_best <= 0.0d0) return
+
+    E_cold = vb / nrm_best
+    E_norm_sq = real(E_cold(1)*conjg(E_cold(1)) + E_cold(2)*conjg(E_cold(2)) &
+                   + E_cold(3)*conjg(E_cold(3)))
+    if (E_norm_sq <= 0.0d0) return
+
+    E_par_k = E_cold(1)*st + E_cold(3)*ct
+    sin2_theta_kE_cold = 1.0d0 - real(E_par_k*conjg(E_par_k)) / E_norm_sq
+    sin2_theta_kE_cold = max(0.0d0, min(1.0d0, sin2_theta_kE_cold))
+    ok = .true.
+
+contains
+
+    subroutine cross3(a, b, cr)
+        complex(kind=8), intent(in)  :: a(3), b(3)
+        complex(kind=8), intent(out) :: cr(3)
+        cr(1) = a(2)*b(3) - a(3)*b(2)
+        cr(2) = a(3)*b(1) - a(1)*b(3)
+        cr(3) = a(1)*b(2) - a(2)*b(1)
+    end subroutine cross3
+
+    real*8 function cnorm(a)
+        complex(kind=8), intent(in) :: a(3)
+        cnorm = sqrt(real(a(1)*conjg(a(1)) + a(2)*conjg(a(2)) + a(3)*conjg(a(3))))
+    end function cnorm
+
+end subroutine cold_plasma_efield_diag
  
 ! ==============================================================================
 ! SUBROUTINE: get_whamp_dispersion
@@ -696,8 +826,6 @@ use comin
 use comoutput
 use comcout
 implicit none
-
-    include "mpif.h"
  
     real*8, intent(in)               :: fce_khz, fpe_khz
     real*8, intent(in)               :: theta_min, theta_max
@@ -807,146 +935,240 @@ implicit none
     PZL     = 1.0d0             ! log scale for k grid
     !XOI = 0.05d0 / fce_khz      ! starting frequency: 0.5 kHz in omega/Omega_e units
  
-    ! -------------------------------------------------------------------------
+! -------------------------------------------------------------------------
     ! Call WHAMP for each theta point
     ! -------------------------------------------------------------------------
     do i_theta = 1, n_theta
         theta = curve%theta(i_theta)
-        do i_k = 1, n_k
-            k_whamp = curve%k_whamp(i_k)
 
-            ! Compute per-point initial guess using approximate cold dispersion.
-            ! HOT (electron whistler/hiss/chorus): seeded using electron plasma
-            ! frequency and Omega_e, rising toward Omega_e as k grows.
-            ! EMIC (ion cyclotron): same functional shape, but seeded using the
-            ! REFERENCE ION's (species 1 -- must be the majority ion species,
-            ! e.g. H+ for the H+ band) plasma frequency and gyrofrequency,
-            ! rising toward Omega_species1 as k grows, instead of Omega_e.
-            ! Using the electron-scale formula for EMIC pulls WHAMP toward
-            ! either the trivial near-zero solution or the unrelated electron
-            ! whistler branch.
+        if (trim(DispersionType) == 'EMIC' .and. cutoff_success) then
+
             block
-                real*8 :: k_si_guess, kc_over_wp_sq
-                real*8 :: omega_ref_rads, wp_ref_rads
+                logical :: have_prev, seed_ok, valid_tmp
+                real*8  :: prev_omega, cold_seed_omega
+                real*8  :: n_ref_ind2_tmp, dw_dk_tmp, omega_tmp
+                complex(kind=8) :: EFL_tmp(3), BFL_tmp(3)
 
-                k_si_guess = 10.0d0**k_whamp * omega_e_rads * CV_local / c
+                logical :: walk_ok
+                real*8  :: walk_omega, dw_dk_walk
+                complex(kind=8) :: EFL_walk(3), BFL_walk(3)
+                real*8  :: k_whamp_start, k_whamp_end, k_whamp_sub, k_sub_si
+                integer :: j_sub
+                integer, parameter :: n_sub_steps = 20
 
-                if (trim(DispersionType) == 'EMIC') then
-                    if (cutoff_success) then
-                        block
-                            real*8  :: omega_seed_local
-                            logical :: seed_success
-                            call emic_find_seed_omega(k_si_guess, omega_e_rads, ne_total, &
-                                                    omega_cutoff_ion, omega_target_ion, &
-                                                    omega_seed_local, seed_success)
-                            if (seed_success) then
-                                XOI = omega_seed_local / omega_e_rads
-                            else
-                                ! This k lies below the H-band's k_min (no real root in this
-                                ! band at this k yet) -- seed at the cutoff edge rather than
-                                ! guessing toward zero.
-                                XOI = omega_cutoff_ion / omega_e_rads
-                            end if
-                        end block
-                    else
-                        ! Composition doesn't give a clean bracket (e.g. species 1 is the
-                        ! lightest ion, no resonance below it) -- fall back to the old
-                        ! single-ion approximation rather than leaving XOI undefined.
-                        omega_ref_rads = omega_e_rads * me / (hot_species_mass(1) * mi)
-                        wp_ref_rads    = 2.0d0*PI*fpe_khz*1.0d3 * &
-                                        sqrt(hot_species_density_frac(1) * me / &
-                                            (hot_species_mass(1) * mi))
-                        kc_over_wp_sq  = (k_si_guess * c / wp_ref_rads)**2.0d0
-                        XOI = cos(theta) * kc_over_wp_sq / (1.0d0 + kc_over_wp_sq) &
-                            * (omega_ref_rads / omega_e_rads)
+                have_prev  = .false.
+                prev_omega = 0.0d0
+
+                do i_k = 1, n_k
+
+                    if (i_k == 1) then
+                        ! First grid point: cold seed only, single attempt.
+                        valid_tmp = .false.
+                        call emic_find_seed_omega(curve%k(i_k), omega_e_rads, ne_total, &
+                                                   omega_cutoff_ion, omega_target_ion, &
+                                                   cold_seed_omega, seed_ok)
+                        if (seed_ok) then
+                            call get_whamp_point(fce_khz, fpe_khz, theta, curve%k(i_k), &
+                                                  cold_seed_omega, n_ref_ind2_tmp, dw_dk_tmp, &
+                                                  EFL_tmp, BFL_tmp, valid_tmp)
+                            if (valid_tmp) omega_tmp = curve%k(i_k) * c / sqrt(n_ref_ind2_tmp)
+                        end if
+
+                        if (valid_tmp .and. omega_tmp > omega_cutoff_ion * 0.98d0 .and. &
+                            omega_tmp < omega_target_ion * 1.02d0) then
+                            curve%valid(i_theta, i_k) = .true.
+                            curve%omega(i_theta, i_k) = omega_tmp
+                            curve%dw_dk(i_theta, i_k) = dw_dk_tmp
+                            curve%EFL(:, i_theta, i_k) = EFL_tmp
+                            curve%BFL(:, i_theta, i_k) = BFL_tmp
+                            have_prev  = .true.
+                            prev_omega = omega_tmp
+                        end if
+
+                        cycle
                     end if
-                else
-                    omega_ref_rads = omega_e_rads
-                    wp_ref_rads    = 2.0d0*PI*fpe_khz*1.0d3
-                    kc_over_wp_sq  = (k_si_guess * c / wp_ref_rads)**2.0d0
-                    XOI = cos(theta) * kc_over_wp_sq / (1.0d0 + kc_over_wp_sq)
-                end if
-                if (XOI < 1.0d-6) XOI = 1.0d-6
+
+                    ! ------------------------------------------------------
+                    ! i_k >= 2: sub-step from grid point i_k-1 to grid point
+                    ! i_k in n_sub_steps small increments of log10(k).
+                    ! ------------------------------------------------------
+                    k_whamp_start = curve%k_whamp(i_k - 1)
+                    k_whamp_end   = curve%k_whamp(i_k)
+
+                    walk_ok    = have_prev
+                    walk_omega = prev_omega
+
+                    do j_sub = 1, n_sub_steps
+                        k_whamp_sub = k_whamp_start + &
+                            (k_whamp_end - k_whamp_start) * real(j_sub, 8) / real(n_sub_steps, 8)
+                        k_sub_si = 10.0d0**k_whamp_sub * omega_e_rads * CV_local / c
+
+                        valid_tmp = .false.
+
+                        if (walk_ok) then
+                            call get_whamp_point(fce_khz, fpe_khz, theta, k_sub_si, &
+                                                  walk_omega, n_ref_ind2_tmp, dw_dk_tmp, &
+                                                  EFL_tmp, BFL_tmp, valid_tmp)
+                            if (valid_tmp) then
+                                omega_tmp = k_sub_si * c / sqrt(n_ref_ind2_tmp)
+                                if (.not. (omega_tmp > omega_cutoff_ion * 0.98d0 .and. &
+                                           omega_tmp < omega_target_ion * 1.02d0 .and. &
+                                           omega_tmp >= walk_omega * 0.999d0)) then
+                                    valid_tmp = .false.   ! converged, but wrong branch -- retry cold below
+                                end if
+                            end if
+                        end if
+
+                        if (.not. valid_tmp) then
+                            call emic_find_seed_omega(k_sub_si, omega_e_rads, ne_total, &
+                                                       omega_cutoff_ion, omega_target_ion, &
+                                                       cold_seed_omega, seed_ok)
+                            if (seed_ok) then
+                                call get_whamp_point(fce_khz, fpe_khz, theta, k_sub_si, &
+                                                      cold_seed_omega, n_ref_ind2_tmp, dw_dk_tmp, &
+                                                      EFL_tmp, BFL_tmp, valid_tmp)
+                                if (valid_tmp) then
+                                    omega_tmp = k_sub_si * c / sqrt(n_ref_ind2_tmp)
+                                    if (.not. (omega_tmp > omega_cutoff_ion * 0.98d0 .and. &
+                                               omega_tmp < omega_target_ion * 1.02d0 .and. &
+                                               (.not. walk_ok .or. omega_tmp >= walk_omega * 0.999d0))) then
+                                        valid_tmp = .false.
+                                    end if
+                                end if
+                            end if
+                        end if
+
+                        if (valid_tmp) then
+                            walk_omega = omega_tmp
+                            dw_dk_walk = dw_dk_tmp
+                            EFL_walk   = EFL_tmp
+                            BFL_walk   = BFL_tmp
+                            walk_ok    = .true.
+                        else
+                            walk_ok = .false.
+                            ! subsequent sub-steps in this interval will each
+                            ! retry fresh from a cold seed (walk_ok=.false.
+                            ! skips the continuation attempt above), so the
+                            ! walk can still recover before reaching i_k
+                        end if
+                    end do   ! j_sub
+
+                    if (walk_ok) then
+                        curve%valid(i_theta, i_k) = .true.
+                        curve%omega(i_theta, i_k) = walk_omega
+                        curve%dw_dk(i_theta, i_k) = dw_dk_walk
+                        curve%EFL(:, i_theta, i_k) = EFL_walk
+                        curve%BFL(:, i_theta, i_k) = BFL_walk
+                        have_prev  = .true.
+                        prev_omega = walk_omega
+                    else
+                        have_prev = .false.   ! next interval starts fresh, not from a stale/far seed
+                    end if
+
+                end do   ! i_k
             end block
 
-            PZL = 1.0d0
-            if (abs(theta) < 1.0d-6) then
-                PM(1) = -10.0d0
-                PM(2) = -10.0d0
-                PM(3) = 1.0d0
-                ZM(1) = k_whamp
-                ZM(2) = k_whamp
-                ZM(3) = 1.0d0
-            else
-                PM(1) = k_whamp + log10(sin(theta))
-                PM(2) = PM(1)
-                PM(3) = 1.0d0
-                ZM(1) = k_whamp + log10(cos(theta))
-                ZM(2) = ZM(1)
-                ZM(3) = 1.0d0
-            end if
+        else
+            ! ---- existing per-point independent-seed logic (HOT
+            !      chorus/hiss, or EMIC without a valid cutoff bracket) --
+            !      UNCHANGED from current file ----
+            do i_k = 1, n_k
+                k_whamp = curve%k_whamp(i_k)
 
-            call whamp_engine
-
-            if (flagSolutionFoundOUT(1, 1) == 1) then
                 block
-                    real*8  :: omega_candidate, ratio_check
-                    logical :: accept
+                    real*8 :: k_si_guess, kc_over_wp_sq
+                    real*8 :: omega_ref_rads, wp_ref_rads
 
-                    omega_candidate = real(fOUT(1, 1)) * omega_e_rads
+                    k_si_guess = 10.0d0**k_whamp * omega_e_rads * CV_local / c
 
-                    if (XOI > 1.0d-10) then
-                        ratio_check = real(fOUT(1,1)) / XOI
+                    if (trim(DispersionType) == 'EMIC') then
+                        if (cutoff_success) then
+                            block
+                                real*8  :: omega_seed_local
+                                logical :: seed_success
+                                call emic_find_seed_omega(k_si_guess, omega_e_rads, ne_total, &
+                                                        omega_cutoff_ion, omega_target_ion, &
+                                                        omega_seed_local, seed_success)
+                                if (seed_success) then
+                                    XOI = omega_seed_local / omega_e_rads
+                                else
+                                    XOI = omega_cutoff_ion / omega_e_rads
+                                end if
+                            end block
+                        else
+                            omega_ref_rads = omega_e_rads * me / (hot_species_mass(1) * mi)
+                            wp_ref_rads    = 2.0d0*PI*fpe_khz*1.0d3 * &
+                                            sqrt(hot_species_density_frac(1) * me / &
+                                                (hot_species_mass(1) * mi))
+                            kc_over_wp_sq  = (k_si_guess * c / wp_ref_rads)**2.0d0
+                            XOI = cos(theta) * kc_over_wp_sq / (1.0d0 + kc_over_wp_sq) &
+                                * (omega_ref_rads / omega_e_rads)
+                        end if
                     else
-                        ratio_check = 1.0d0
+                        omega_ref_rads = omega_e_rads
+                        wp_ref_rads    = 2.0d0*PI*fpe_khz*1.0d3
+                        kc_over_wp_sq  = (k_si_guess * c / wp_ref_rads)**2.0d0
+                        XOI = cos(theta) * kc_over_wp_sq / (1.0d0 + kc_over_wp_sq)
                     end if
-
-                    if (trim(DispersionType) == 'EMIC' .and. cutoff_success) then
-                        ! Physical band bounds are the meaningful filter here: the cold
-                        ! seed sets which basin Newton starts in, but thermal corrections
-                        ! (larger near the resonance, at higher k) can legitimately push
-                        ! the converged root well away from the cold seed value. What
-                        ! can't happen physically is the root landing outside this
-                        ! band's own cutoff-to-resonance range -- that's the actual
-                        ! branch-jump signature (the ratio_check window was only ever a
-                        ! proxy for this, before we knew the real band edges).
-                        accept = (omega_candidate > omega_cutoff_ion * 0.98d0) .and. &
-                                (omega_candidate < omega_target_ion * 1.02d0) .and. &
-                                (ratio_check > 0.05d0) .and. (ratio_check < 20.0d0)
-                    else
-                        accept = (omega_candidate > 0.0d0) .and. (omega_candidate < omega_e_rads) &
-                                .and. (ratio_check > 0.2d0) .and. (ratio_check < 5.0d0)
-                    end if
-
-                    if (accept) then
-                        curve%valid(i_theta, i_k) = .true.
-                        curve%omega(i_theta, i_k) = omega_candidate
-                        curve%dw_dk(i_theta, i_k) = VGZOUT(1, 1) * c / CV
-                        curve%EFL(1, i_theta, i_k) = ExOUT(1, 1)
-                        curve%EFL(2, i_theta, i_k) = EyOUT(1, 1)
-                        curve%EFL(3, i_theta, i_k) = EzOUT(1, 1)
-                        curve%BFL(1, i_theta, i_k) = BxOUT(1, 1)
-                        curve%BFL(2, i_theta, i_k) = ByOUT(1, 1)
-                        curve%BFL(3, i_theta, i_k) = BzOUT(1, 1)
-                    end if
+                    if (XOI < 1.0d-6) XOI = 1.0d-6
                 end block
-            end if
 
-            !if (i_theta == 18 .and. flagSolutionFoundOUT(1,1) == 1) then
-            !    open(82, file='omega_ratio_a0005.txt', status='unknown', position='append')
-            !    write(82,*) 'i_k=', i_k, ' omega_over_omega_e=', real(fOUT(1,1))
-            !    close(82)
-            !end if
+                PZL = 1.0d0
+                if (abs(theta) < 1.0d-6) then
+                    PM(1) = -10.0d0
+                    PM(2) = -10.0d0
+                    PM(3) = 1.0d0
+                    ZM(1) = k_whamp
+                    ZM(2) = k_whamp
+                    ZM(3) = 1.0d0
+                else
+                    PM(1) = k_whamp + log10(sin(theta))
+                    PM(2) = PM(1)
+                    PM(3) = 1.0d0
+                    ZM(1) = k_whamp + log10(cos(theta))
+                    ZM(2) = ZM(1)
+                    ZM(3) = 1.0d0
+                end if
 
-            !if (i_theta == 1) then
-            !    open(83, file='xoi_convergence_chorus.txt', status='unknown', position='append')
-            !    write(83,*) 'i_k=', i_k, ' fce=', fce_khz, ' fpe=', fpe_khz, &
-            !                ' XOI_guess=', XOI, &
-            !                ' converged=', (flagSolutionFoundOUT(1,1) == 1), &
-            !                ' curve_valid=', curve%valid(i_theta, i_k)
-            !    close(83)
-            !end if
-        end do
+                call whamp_engine
+
+                if (flagSolutionFoundOUT(1, 1) == 1) then
+                    block
+                        real*8  :: omega_candidate, ratio_check
+                        logical :: accept
+
+                        omega_candidate = real(fOUT(1, 1)) * omega_e_rads
+
+                        if (XOI > 1.0d-10) then
+                            ratio_check = real(fOUT(1,1)) / XOI
+                        else
+                            ratio_check = 1.0d0
+                        end if
+
+                        if (trim(DispersionType) == 'EMIC' .and. cutoff_success) then
+                            accept = (omega_candidate > omega_cutoff_ion * 0.98d0) .and. &
+                                    (omega_candidate < omega_target_ion * 1.02d0) .and. &
+                                    (ratio_check > 0.05d0) .and. (ratio_check < 20.0d0)
+                        else
+                            accept = (omega_candidate > 0.0d0) .and. (omega_candidate < omega_e_rads) &
+                                    .and. (ratio_check > 0.2d0) .and. (ratio_check < 5.0d0)
+                        end if
+
+                        if (accept) then
+                            curve%valid(i_theta, i_k) = .true.
+                            curve%omega(i_theta, i_k) = omega_candidate
+                            curve%dw_dk(i_theta, i_k) = VGZOUT(1, 1) * c / CV
+                            curve%EFL(1, i_theta, i_k) = ExOUT(1, 1)
+                            curve%EFL(2, i_theta, i_k) = EyOUT(1, 1)
+                            curve%EFL(3, i_theta, i_k) = EzOUT(1, 1)
+                            curve%BFL(1, i_theta, i_k) = BxOUT(1, 1)
+                            curve%BFL(2, i_theta, i_k) = ByOUT(1, 1)
+                            curve%BFL(3, i_theta, i_k) = BzOUT(1, 1)
+                        end if
+                    end block
+                end if
+            end do
+        end if
     end do
 
     !open(99, file='whamp_debug_check_a0005.txt', status='unknown', position='append')
@@ -955,6 +1177,36 @@ implicit none
     !            ' omega_max(Hz)=', maxval(curve%omega, mask=curve%valid)/(2.0d0*PI), &
     !            ' valid_count=', count(curve%valid), '/', size(curve%valid)
     !close(99)
+
+    block
+        real*8, parameter :: WHAMP_DEBUG_FCE_MIN = 0.0d0
+        real*8, parameter :: WHAMP_DEBUG_FCE_MAX = 1.0d20
+        real*8, parameter :: WHAMP_DEBUG_THETA_TARGET = 8.9795916527509672d0  ! degrees
+        integer :: i_theta_dbg, i_k_dbg, i_theta_closest
+        real*8  :: min_theta_diff, theta_diff
+
+        if (fce_khz >= WHAMP_DEBUG_FCE_MIN .and. fce_khz <= WHAMP_DEBUG_FCE_MAX) then
+            min_theta_diff = 1.0d20
+            i_theta_closest = 1
+            do i_theta_dbg = 1, n_theta
+                theta_diff = abs(curve%theta(i_theta_dbg)*180.0d0/PI - WHAMP_DEBUG_THETA_TARGET)
+                if (theta_diff < min_theta_diff) then
+                    min_theta_diff = theta_diff
+                    i_theta_closest = i_theta_dbg
+                end if
+            end do
+
+            !open(97, file='whamp_nres1_target_debug.txt', status='unknown', position='append')
+            !write(97,*) '=== fce_khz=', fce_khz, ' fpe_khz=', fpe_khz, &
+            !            ' target_theta_found(deg)=', curve%theta(i_theta_closest)*180.0d0/PI, ' ==='
+            !do i_k_dbg = 1, n_k
+            !    write(97,*) '  i_k=', i_k_dbg, ' k=', curve%k(i_k_dbg), &
+            !                ' omega=', curve%omega(i_theta_closest,i_k_dbg), &
+            !                ' valid=', curve%valid(i_theta_closest,i_k_dbg)
+            !end do
+            !close(97)
+        end if
+    end block
 
 end subroutine get_whamp_dispersion
  
@@ -1029,55 +1281,53 @@ subroutine get_whamp_point(fce_khz, fpe_khz, theta, k_target, omega_guess, &
 end subroutine get_whamp_point
 
 
-subroutine hot_plasma_polarisation(alpha_ne, nres, &
+subroutine hot_plasma_polarisation(alpha_ne, nres, theta, k_vec, &
                                    BesselF1, BesselF2, BesselF3, &
                                    EFL, BFL, n_ref_ind2, Fsq)
 use constants
 implicit none
-    real*8, intent(in)          :: alpha_ne
+    real*8, intent(in)          :: alpha_ne, theta, k_vec
     integer, intent(in)         :: nres
     real*8, intent(in)          :: BesselF1, BesselF2, BesselF3
     complex(kind=8), intent(in) :: EFL(3)
     complex(kind=8), intent(in) :: BFL(3)
     real*8, intent(in)          :: n_ref_ind2
     real*8, intent(out)         :: Fsq
-    real*8, parameter :: whamp_c_inv_undo = 299.7925d0
 
-    complex(kind=8) :: E_R, E_L, Theta_nk
-    real*8          :: B_norm_sq
-    real*8, parameter :: sin2_theta_kE_min = 0.001d0
+    complex(kind=8) :: E_R, E_L, Theta_nk, E_par_k
+    real*8          :: E_norm_sq, sin2_theta_kE, k_sgn
 
-    ! E_R, E_L per Lyons (1974b), text following Eq. (3):
-    ! "E_k,L^R = (Ex -+ i Ey)/sqrt(2)", R takes the upper (minus) sign.
+    real*8, parameter :: sin2_theta_kE_min = 1.0d-12
+
+    Fsq = 0.0d0
+
+    E_norm_sq = real(EFL(1)*conjg(EFL(1)) + EFL(2)*conjg(EFL(2)) &
+                   + EFL(3)*conjg(EFL(3)))
+    if (E_norm_sq <= 0.0d0) return
+
+    ! transverse fraction of E relative to k, from EFL alone
+    E_par_k = EFL(1)*sin(theta) + EFL(3)*cos(theta)
+    sin2_theta_kE = 1.0d0 - real(E_par_k*conjg(E_par_k)) / E_norm_sq
+    sin2_theta_kE = max(0.0d0, min(1.0d0, sin2_theta_kE))   ! guard roundoff
+    if (sin2_theta_kE < sin2_theta_kE_min) return
+
+    ! E_R, E_L per Lyons (1974), text following Eq. (3):
+    !    "E_k,L^R = (Ex -+ i Ey)/sqrt(2)", R takes the upper (minus) sign.
     E_R = (EFL(1) - (0.0d0,1.0d0)*EFL(2)) / sqrt(2.0d0)
     E_L = (EFL(1) + (0.0d0,1.0d0)*EFL(2)) / sqrt(2.0d0)
 
-    ! Theta_nk, Lyons (1974b) Eq. (3). 
-    Theta_nk = (E_R * BesselF3 + E_L * BesselF1) / sqrt(2.0d0) &
-            + EFL(3) * BesselF2 * cos(alpha_ne) / sin(alpha_ne)
-
-    ! Phi_n^2 = mu^2 * |Theta_nk|^2 / |B_k|^2
-     B_norm_sq = real(BFL(1)*conjg(BFL(1)) + BFL(2)*conjg(BFL(2)) + BFL(3)*conjg(BFL(3))) &
-                * whamp_c_inv_undo**2
-
-    if (B_norm_sq > 0.0d0 .and. n_ref_ind2 > 0.0d0) then
-        block
-            real*8 :: E_norm_sq_local, sin2_check
-            E_norm_sq_local = real(EFL(1)*conjg(EFL(1)) + EFL(2)*conjg(EFL(2)) + EFL(3)*conjg(EFL(3)))
-            if (E_norm_sq_local > 0.0d0) then
-                sin2_check = B_norm_sq / (n_ref_ind2 * E_norm_sq_local)
-            else
-                sin2_check = 0.0d0
-            end if
-            if (sin2_check < sin2_theta_kE_min) then
-                Fsq = 0.0d0
-            else
-                Fsq = n_ref_ind2 * real(Theta_nk * conjg(Theta_nk)) / B_norm_sq
-            end if
-        end block
+    !  Theta_nk, Lyons (1974) Eq. (3) 
+    if (k_vec >= 0.0d0) then
+        k_sgn =  1.0d0
     else
-        Fsq = 0.0d0
+        k_sgn = -1.0d0
     end if
+
+    Theta_nk = (E_R * BesselF3 + E_L * BesselF1) / sqrt(2.0d0) &
+             + k_sgn * EFL(3) * BesselF2 * cos(alpha_ne) / sin(alpha_ne)
+
+    ! Phi_n^2 = |Theta_nk|^2 / (|E|^2 sin^2(theta_kE))
+    Fsq = real(Theta_nk * conjg(Theta_nk)) / (E_norm_sq * sin2_theta_kE)
 
 end subroutine hot_plasma_polarisation
 
