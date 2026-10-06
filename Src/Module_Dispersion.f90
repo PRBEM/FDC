@@ -3,43 +3,72 @@
 ! ==============================================================================
 !
 ! PURPOSE:
-!   Provides a unified interface for evaluating cold or hot plasma dispersion
-!   properties at a given wave frequency, wave normal angle, and local plasma
-!   state. The dispersion model is selected at runtime via the DispersionType
-!   flag in module constants ('COLD' or 'HOT').
+!   Provides the dispersion physics used throughout the code: the cold plasma
+!   (Stix) relation, the kinetic relation via WHAMP, the EMIC band logic, and
+!   the derived quantities built on them (group velocity, polarisation,
+!   Jacobians). The model in use is selected by DispersionType in module
+!   constants ('COLD', 'HOT' or 'EMIC').
 !
-!   Currently implemented:
-!     'COLD' - Cold plasma dispersion relation (Stix formulation)
-!
-!   Planned but not yet implemented:
-!     'HOT'  - Hot plasma dispersion relation via WHAMP
-!
-!   This module is intended to be the single point of change when adding
-!   new dispersion models. WeightFunction and any other caller should obtain
-!   all dispersion quantities exclusively through Get_dispersion_properties
-!   and Get_polarisation_factor, and should have no direct knowledge of
-!   which model is active.
+!   STATUS: COLD and HOT are in production use and validated. EMIC is work
+!   in progress: unvalidated and incomplete, so EMIC results should not be
+!   used without checking the implementation first.
 !
 ! CONTENTS:
-!   DispersionProperties        - Derived type carrying dispersion outputs
-!   Get_dispersion_properties   - Dispatcher: selects cold or hot plasma path
-!   Get_polarisation_factor     - Computes Fsq from a DispersionProperties instance
-!   cold_plasma_parameters      - Computes Stix parameters R, L, P, S, D
-!   cold_plasma_group_velocity  - Computes dw/dk from analytic Stix derivatives
-!   cold_plasma_polarisation    - Computes Fsq from Stix parameters and Bessel functions
+!   Derived types
+!     DispersionProperties   - dispersion outputs for one evaluation point
+!     WHAMPCurve             - tabulated omega(theta, k) surface for one
+!                              local plasma state
+!     WHAMPCurveCache        - set of curves along a field line, keyed by
+!                              (L, alpha); WHAMP_CACHE_SIZE entries, LRU
+!
+!   Dispatch
+!     Get_dispersion_properties - cold or hot path for one (omega, k, theta)
+!     Get_polarisation_factor   - Fsq from a DispersionProperties instance
+!
+!   Cold plasma
+!     cold_plasma_parameters       - Stix R, L, P, S, D
+!     cold_plasma_parameters_multi - the same for several ion species
+!     cold_plasma_refractive_index - n^2 from the Stix parameters
+!     cold_plasma_stix_derivatives - d(R,L,P,S)/d omega
+!     cold_plasma_group_velocity   - dw/dk from the analytic derivatives
+!     cold_plasma_polarisation     - Fsq from Stix parameters and Bessel terms
+!     cold_plasma_efield_diag      - E-field eigenvector (-DDIAG only)
+!
+!   Hot plasma (WHAMP)
+!     get_whamp_dispersion   - builds a WHAMPCurve: WHAMP_N_THETA x WHAMP_N_K
+!                              kinetic solutions for one (fce, fpe)
+!     get_whamp_point        - single targeted solution, used as a rescue
+!                              when interpolation on the curve fails
+!     hot_plasma_polarisation- Fsq from WHAMP's E and B field components
+!
+!   EMIC  (WORK IN PROGRESS - unvalidated, incomplete)
+!     emic_band_bounds, emic_find_cutoff, emic_find_seed_omega
+!
+!   Cunningham formulation
+!     cunningham_jacobian    - Jacobian of the Cunningham (2023) kernel
+!
+!   Profiling accumulators (-DPROFILE): t_*_total, n_*_calls, summed per rank
+!   and printed by mpi_parallel.
 !
 ! MODULE DEPENDENCIES:
-!   constants  - Physical constants and DispersionType flag
+!   constants  - physical constants, DispersionType, WHAMP_N_K,
+!                WHAMP_N_THETA, N_max_hot, k_min/max_exp_val_input,
+!                hot_species_* configuration
 !
 ! NOTES:
-!   - This module replaces the inline Stix parameter, group velocity, and
-!     polarisation factor calculations that were previously embedded in
-!     WeightFunction, and the a1-a6 side effects previously written to
-!     module variables by Roots_finder.
-!   - module variables (R_stix, L_stix, P_stix, S_stix, D_stix) are no
-!     longer written as side effects after this refactoring. Any subroutine
-!     that previously read these from module variables (e.g. int_N_omega)
-!     will need to be updated in a future refactoring step.
+!   - The original intent was that callers obtain every dispersion quantity
+!     through Get_dispersion_properties and Get_polarisation_factor, with no
+!     knowledge of the active model. That holds for the cold path; for
+!     HOT/EMIC, WeightFunction, int_N_omega and D_local_n interpolate the
+!     WHAMPCurve inline (bracketing in theta and k, tolerance fallback,
+!     targeted rescue), in three near-identical copies. Moving that into a
+!     routine here would restore the intent and remove several hundred lines.
+!   - WHAMP curves are expensive: one call to get_whamp_dispersion solves
+!     WHAMP_N_THETA x WHAMP_N_K kinetic dispersion problems. They depend only
+!     on the local plasma state, i.e. on (L, lambda), not on energy or pitch
+!     angle, which is what the WHAMPCurveCache exploits.
+!   - The cold Stix parameters are no longer written to module variables as
+!     a side effect; they are returned through the argument list.
 !
 ! ==============================================================================
  
@@ -65,9 +94,8 @@ implicit none
 !     R, L, P, S, D  - Stix cold plasma parameters [-]
 !
 !   Hot plasma fields (populated when disp_type = 'HOT'):
-!     Fields to be determined once WHAMP interface is finalised.
-!     Commented out below to document intent without committing to an
-!     interface that may change.
+!     EFL, BFL       - wave E and B field components from WHAMP, used by
+!                      hot_plasma_polarisation
 !
 ! ==============================================================================
 type :: DispersionProperties
@@ -84,7 +112,7 @@ type :: DispersionProperties
     real*8 :: S             ! Stix S = (R+L)/2
     real*8 :: D             ! Stix D = (R-L)/2
  
-    ! Hot plasma (WHAMP) outputs (to be implemented)
+    ! Hot plasma (WHAMP) outputs
     complex(kind=8) :: EFL(3)   ! E field components from WHAMP
     complex(kind=8) :: BFL(3)   ! B field components from WHAMP
  
@@ -128,7 +156,10 @@ end type DispersionProperties
 !     constants
 !   - Only points where valid=.true. should be used for interpolation
 !   - For parallel propagation only (theta=0), n_theta=1
-!   - fce_khz and fpe_khz stored for reference/debugging
+!   - fce_khz and fpe_khz identify the plasma state the curve was built for;
+!     they are also the cache key used by WHAMPCurveCache
+!   - EFL and BFL carry the wave field components per (theta, k), used by
+!     hot_plasma_polarisation
 !
 ! ==============================================================================
 type :: WHAMPCurve

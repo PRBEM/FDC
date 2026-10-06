@@ -6,45 +6,36 @@
 !   Computes the mirror latitude (lambda_m) for an electron with equatorial
 !   pitch angle alpha, in a dipole magnetic field.
 !
-!   The mirror point is defined by the condition that the local pitch angle
-!   reaches 90 degrees, i.e.:
-!     sin^2(alpha) = B_eq / B_mirror = cos^6(lambda_m) / f(lambda_m)
+!   The mirror point is where the local pitch angle reaches 90 degrees:
+!     sin^2(alpha) = B_eq / B_m = cos^6(lambda_m) / sqrt(1 + 3*sin^2(lambda_m))
 !
-!   For a dipole field, f(lambda) = (1 + 3*sin^2(lambda))^0.5 / cos^6(lambda),
-!   so the mirror condition reduces to:
-!     cos^6(lambda_m) = sin^2(alpha) * (1 + 3*sin^2(lambda_m))^0.5
+!   With x = cos^2(lambda_m) and s = sin(alpha), and using
+!   sin^2(lambda) = 1 - x, this becomes
+!     x^3 = s^2 * sqrt(4 - 3x)
+!   and, after squaring,
+!     x^6 + 3*s^4*x - 4*s^4 = 0
+!   which is solved for x with the companion-matrix root finder zrhqr1.
 !
-!   This is solved as a 6th-degree polynomial in cos^2(lambda_m) = x:
-!     x^3 - 3*sin^4(alpha)*x - 4*sin^4(alpha) = 0   (... wait -- x^6 form)
-!   using the LAPACK-based root finder zrhqr1.
-!
-!   The physically valid root satisfies 0 <= x <= 1 (since cos^2(lambda_m)
-!   must be in [0,1]), and the mirror latitude is:
+!   The physically valid root satisfies 0 <= x <= 1, and
 !     lambda_m = acos(sqrt(x)) * 0.999
-!
-!   The factor 0.999 keeps the integration endpoint just below the exact
-!   mirror point, avoiding the singularity where sin(alpha_ne) = 1 in
-!   Local_alpha.
 !
 ! INPUTS:
 !   alpha    - Equatorial electron pitch angle [radians]
 !
 ! OUTPUTS:
-!   lambda_m - Mirror latitude [radians], reduced by factor 0.999 to avoid
-!              the mirror point singularity
+!   lambda_m - Mirror latitude [radians], shortened by the factor 0.999
 !
 ! CALLS:
-!   zrhqr1   - LAPACK-based polynomial root finder (degree 6)
+!   zrhqr1   - Polynomial root finder (degree 6, via LAPACK dgeev)
 !
 ! NOTES:
-!   - The polynomial coefficients correspond to:
-!       P(7)*x^6 + P(2)*x + P(1) = 0
-!     where P(7)=1, P(2)=3*sin^4(alpha), P(1)=-4*sin^4(alpha),
-!     and all other coefficients are zero.
-!   - Only real roots in [0, 1] are accepted. If multiple such roots exist,
-!     the last one found is used (in practice only one physical root exists).
-!   - The 0.999 reduction factor is applied to lambda_m (not to x), so the
-!     integration upper bound is 99.9% of the mirror latitude in radians.
+!   - Only real roots in [0, 1] are accepted. If several qualify, the last
+!     one found is used; in practice there is exactly one physical root.
+!   - THE 0.999 factor shortens the mirror latitude so that the local
+!     diffusion coefficient is never evaluated exactly at the turning point,
+!     where the local pitch angle is 90 degrees, v_parallel = 0, and
+!     quantities such as 1/(beta*cos(alpha_local)*cos(theta)) diverge. It is
+!     a property of the integration endpoint only.
 !
 ! ==============================================================================
 
@@ -54,35 +45,32 @@ implicit none
     real*8, intent(in)  :: alpha
     real*8, intent(out) :: lambda_m
 
-    real*8  :: BB
-    real*8  :: P(7)
-    real*8  :: rtr(6), rti(6)
-    real*8  :: root
+    real*8  :: s4             ! sin^4(alpha)
+    real*8  :: P(7)           ! polynomial coefficients, ascending powers
+    real*8  :: rtr(6), rti(6) ! real and imaginary parts of the roots
+    real*8  :: root           ! x = cos^2(lambda_m)
     integer :: i
 
     real*8, parameter :: TOL_IMAG = 1.0d-8
 
-    BB = sin(alpha)
+    s4 = sin(alpha)**4
 
-    ! Polynomial coefficients for cos^6(lambda_m) = sin^2(alpha)*(1+3sin^2(lambda_m))^0.5
-    ! expressed as a degree-6 polynomial in x = cos^2(lambda_m)
+    ! x^6 + 3*s^4*x - 4*s^4 = 0
     P(7) =  1.0
     P(6) =  0.0
     P(5) =  0.0
     P(4) =  0.0
     P(3) =  0.0
-    P(2) =  3.0 * (BB**4.0)
-    P(1) = -4.0 * (BB**4.0)
+    P(2) =  3.0 * s4
+    P(1) = -4.0 * s4
 
     call zrhqr1(P, rtr, rti)
 
-    ! Find the physically valid root: real, in [0, 1]
+    ! physically valid root: real and in [0, 1]
     root = 0.0
     do i = 1, 6
         if (abs(rti(i)) < TOL_IMAG) then
-            if (rtr(i) >= 0.0 .and. rtr(i) <= 1.0) then
-                root = rtr(i)
-            end if
+            if (rtr(i) >= 0.0 .and. rtr(i) <= 1.0) root = rtr(i)
         end if
     end do
 
@@ -90,7 +78,7 @@ implicit none
         write(*,*) 'WARNING: Lambda_mirror_new found no valid root for alpha=', alpha
     end if
 
-    ! Mirror latitude, reduced slightly to avoid the mirror point singularity
+    ! shortened by 0.999: integration endpoint only, see the notes above
     lambda_m = acos(sqrt(root)) * 0.999
 
     return

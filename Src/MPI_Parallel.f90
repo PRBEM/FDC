@@ -31,27 +31,28 @@
 !     L [Earth radii], E [keV], alpha [degrees],
 !     Daa [day^-1], Dpp [day^-1], Dap [day^-1]
 !
+!   In LOCAL MODE (lam_min = lam_max = 0) the same columns hold the local
+!   equatorial coefficients instead of the bounce-averaged ones.
+!
 ! CALLS:
-!   sum_n       - Computes bounce-averaged diffusion coefficients for one
-!                 (L, E, alpha) point, summing over resonance harmonics
+!   sum_n              - Bounce-averaged diffusion coefficients for one
+!                        (L, E, alpha) point, summed over resonance harmonics
+!   rootcheck_summary  - Per-rank comparison of the two root finders (-DROOTCHECK)
 !
 ! MODULE DEPENDENCIES:
 !   constants   - NL, NE, NPA, L_min, L_max, E_min, E_max, PA_min, PA_max,
 !                 unit_output, unit_log, Output_file
+!   dispersion  - profiling accumulators (-DPROFILE)
 !
 ! NOTES:
-!   - PERFORMANCE: currently sends one grid point per MPI message
-!     (noutput_rows=1). For large grids (~1.1M points) this generates
-!     ~2.2M messages, which has significant communication overhead.
-!     A future improvement would be to batch multiple points per message.
-!     The commented-out MPI I/O block at the top of the original was an
-!     early attempt to address this.
-!   - The grid size is hardcoded to a maximum of 1,200,000 points
-!     (InputData(1200000,3)), sufficient for 89*211*61 ~ 1.1M points.
-!     If NL*NE*NPA exceeds this, the code will silently overflow.
-!     A future improvement would use allocatable arrays sized from NL*NE*NPA.
+!   - The input grid is held in a fixed array of 1,200,000 points
+!     (89*211*61 ~ 1.1M). If NL*NE*NPA exceeds that, the run stops with an
+!     error rather than overflowing silently.
 !   - The load is distributed so that remainder rows (mod(rows, numprocs-1))
 !     are assigned to the lowest-ranked slaves (ranks 1 to row_remainder).
+!   - Rank 0 only dispatches and writes; with n ranks, n-1 compute. A run
+!     with -np 2 therefore uses exactly one working core, which is how the
+!     single-core timings are measured.
 !
 ! ==============================================================================
 
@@ -91,6 +92,16 @@ implicit none
 
     rows   = NL * NE * NPA
     master = 0
+
+    ! The input grid lives in a fixed-size array; stop rather than overflow it
+    if (rows > size(InputData, 1)) then
+        if (mype == master) then
+            write(*,*) 'ERROR: grid has ', rows, ' points, maximum is ', size(InputData,1)
+            write(*,*) '       (NL*NE*NPA; enlarge InputData or reduce the grid)'
+        end if
+        call MPI_FINALIZE(ierr)
+        stop
+    end if
 
     ! -------------------------------------------------------------------------
     ! MASTER: build grid, distribute work, collect and write results
@@ -222,14 +233,16 @@ implicit none
         end do
 
     end if
+
 #ifdef PROFILE
+    ! The timers are nested: Integration_lambda contains WeightFunction, which
+    ! contains Roots_finder and int_N_omega. Integration_lambda is therefore
+    ! the per-rank total; the others are subsets of it and must not be summed.
     write(*,*) '=== PROFILING SUMMARY (rank', mype, ') ==='
     write(*,*) 'Integration_lambda: ', t_intlam_total, 's (', n_intlam_calls, ' calls)'
     write(*,*) 'Roots_finder:       ', t_roots_total,  's (', n_roots_calls,  ' calls)'
     write(*,*) 'WeightFunction:     ', t_weight_total, 's (', n_weight_calls, ' calls)'
     write(*,*) 'int_N_omega:        ', t_intn_total,   's (', n_intn_calls,   ' calls)'
-    write(*,*) 'Total accounted:    ', &
-        t_intlam_total+t_roots_total+t_weight_total+t_intn_total, 's'
 #endif
 
 #ifdef ROOTCHECK

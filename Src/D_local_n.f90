@@ -13,8 +13,18 @@
 !
 !   The result is the local (non-bounce-averaged) diffusion rate. Bounce-
 !   averaging over latitude and summation over resonance harmonics are
-!   performed by the calling routine.
+!   performed by the calling routine (D_ba / Integration_lambda / Sum_N). In
+!   local mode (lam_min = lam_max = 0) D_ba calls this routine directly and
+!   returns its output unchanged.
 !
+!   Two formulations are supported, selected by DiffusionFormulation:
+!
+!     LYONS      - the integrand at each theta comes from WeightFunction
+!                  (Lyons 1974b / Albert 2007 formulation, with the N(omega)
+!                  wave-power normalisation).
+!     CUNNINGHAM - the integrand is assembled here from the routines in
+!                  Cunningham_normalization.f90 and cunningham_jacobian
+!                  (Cunningham 2023), which avoids N(omega) entirely.
 !
 ! INPUTS:
 !   alpha          - Equatorial electron pitch angle [radians]
@@ -42,7 +52,15 @@
 !   DDN(3)         - Local D_pp at this latitude [s^-1] (momentum diffusion)
 !
 ! CALLS:
-!   WeightFunction - Diffusion coefficient integrand at a single theta value
+!   LYONS path:
+!     rootscan_skip_test - cheap test for theta values that cannot resonate
+!     WeightFunction     - diffusion coefficient integrand at a single theta
+!   CUNNINGHAM path:
+!     Local_alpha, ElectronDensity, B_field, Freq_Spectral - local plasma state
+!     gX_normalization_integral, Roots_finder, Bessel_FirstKind,
+!     hot_plasma_polarisation, dD_dk_dD_dw_cunningham, phi_squared_cunningham,
+!     PowerSpectralDensity, cunningham_jacobian,
+!     get_normalised_intensity_cunningham
 !
 ! MODULE DEPENDENCIES:
 !   constants      - Physical constants and unit conversion factors (RAD, PI, ...)
@@ -57,8 +75,25 @@
 ! NOTES:
 !   - theta_min and theta_max are read in degrees from Theta_function(5:6)
 !     and converted to radians internally.
-!   - nint_X is a global parameter from a module rather than an argument;
-!     this is a known issue to be addressed in future refactoring.
+!   - nint_X comes from module constants rather than from the argument list;
+!     a candidate for a future refactor.
+!   - The local plasma state (Local_alpha, ElectronDensity, B_field,
+!     Freq_Spectral) and the particle state are computed once per call,
+!     before the theta loop. The CUNNINGHAM path uses them directly; the
+!     LYONS path needs them only for the skip test, since WeightFunction
+!     recomputes its own copies. Passing them down instead would remove that
+!     duplication.
+!   - THETA SKIPPING (COLD + LYONS only): before WeightFunction is called,
+!     rootscan_skip_test checks whether the ranges of n^2(omega,theta) and
+!     n_res(omega)^2 over [omega_lc, omega_uc] can overlap at all. Where they
+!     cannot, no resonance exists and WeightFunction would return zero, so
+!     the call is skipped. This follows Albert (1999, 2003, 2005, 2007); it
+!     changes no results and is disabled with -DNO_THETA_SKIP.
+!   - The WHAMP interpolation block in the CUNNINGHAM path (bracketing in
+!     theta and k, the tolerance fallback and the targeted rescue) duplicates
+!     the equivalent block in WeightFunction. Extracting it into a shared
+!     routine would remove a few hundred lines and keep the two paths from
+!     drifting apart.
 
 subroutine D_local_n(alpha, E, L, nres, lambda, Bw, Theta_function, DDN, whamp_curve)
 use constants
@@ -147,7 +182,7 @@ implicit none
     ! Particle state
     betta  = sqrt(E*(E + 2.0d0)) / (E + 1.0d0)
     gamma1 = E + 1.0d0
-    p      = me * c * sqrt((E + 1.0d0)**2.0d0 - 1.0d0)
+    p      = me * c * sqrt((E + 1.0d0)**2 - 1.0d0)
     vpar   = p / gamma1 / me * cos(alpha_ne)
     p_perp = p * sin(alpha_ne)
 
@@ -201,8 +236,8 @@ implicit none
 
       else
         X = tan(theta)
-        gX_raw = X * ( exp(-((X - X_m1)/X_w1)**2.0d0) &
-                  + theta_q * exp(-((X - X_m2)/X_w2)**2.0d0) )
+        gX_raw = X * ( exp(-((X - X_m1)/X_w1)**2) &
+                  + theta_q * exp(-((X - X_m2)/X_w2)**2) )
  
  
         ! Resonant frequencies at this theta
@@ -223,7 +258,7 @@ implicit none
  
             if (root_omega == 0.0d0) cycle
             ! Skip roots below lower hybrid (same check as WeightFunction)
-            if (root_omega <= sqrt((omega_pe/omega_e)**2.0d0 + 1.0d0)) cycle
+            if (root_omega <= sqrt((omega_pe/omega_e)**2 + 1.0d0)) cycle
  
             if (trim(DispersionType) == 'HOT' .or. trim(DispersionType) == 'EMIC') then
  
@@ -285,8 +320,8 @@ implicit none
  
                         if (omega_lo_t <= root_omega .and. omega_hi_t >= root_omega) then
                             frac  = (root_omega - omega_lo_t) / (omega_hi_t - omega_lo_t)
-                            n2_lo = (whamp_curve%k(i_k-1) * c / omega_lo_t)**2.0d0
-                            n2_hi = (whamp_curve%k(i_k)   * c / omega_hi_t)**2.0d0
+                            n2_lo = (whamp_curve%k(i_k-1) * c / omega_lo_t)**2
+                            n2_hi = (whamp_curve%k(i_k)   * c / omega_hi_t)**2
                             dw_lo = (1.0d0-w_theta)*whamp_curve%dw_dk(i_theta_lo,i_k-1) + &
                                     w_theta*whamp_curve%dw_dk(i_theta_hi,i_k-1)
                             dw_hi = (1.0d0-w_theta)*whamp_curve%dw_dk(i_theta_lo,i_k) + &
@@ -358,7 +393,7 @@ implicit none
                                 tol = 0.01d0
                                 if (root_omega > omega_max_t .and. &
                                     abs(root_omega-omega_max_t) < tol*omega_max_t) then
-                                    n_ref_ind2 = (whamp_curve%k(i_last_valid)*c/omega_max_t)**2.0d0
+                                    n_ref_ind2 = (whamp_curve%k(i_last_valid)*c/omega_max_t)**2
                                     dw_dk = (1.0d0-w_theta)*whamp_curve%dw_dk(i_theta_lo,i_last_valid) + &
                                             w_theta*whamp_curve%dw_dk(i_theta_hi,i_last_valid)
                                     if (abs(dw_dk) < 1.0d-6*c) n_ref_ind2 = 0.0d0
@@ -377,7 +412,7 @@ implicit none
                                     found = .true.
                                 else if (root_omega < omega_min_t .and. &
                                         abs(root_omega-omega_min_t) < tol*omega_min_t) then
-                                    n_ref_ind2 = (whamp_curve%k(i_first_valid)*c/omega_min_t)**2.0d0
+                                    n_ref_ind2 = (whamp_curve%k(i_first_valid)*c/omega_min_t)**2
                                     dw_dk = (1.0d0-w_theta)*whamp_curve%dw_dk(i_theta_lo,i_first_valid) + &
                                             w_theta*whamp_curve%dw_dk(i_theta_hi,i_first_valid)
                                     if (abs(dw_dk) < 1.0d-6*c) n_ref_ind2 = 0.0d0
@@ -488,9 +523,9 @@ implicit none
               if (abs(dD_dw) < 1.0d-99) cycle
  
               if (k_par >= 0.0d0) then
-                  sterm = vpar + (dD_dk/dD_dw)*sqrt(1.0d0 + X**2.0d0)
+                  sterm = vpar + (dD_dk/dD_dw)*sqrt(1.0d0 + X**2)
               else
-                  sterm = vpar - (dD_dk/dD_dw)*sqrt(1.0d0 + X**2.0d0)
+                  sterm = vpar - (dD_dk/dD_dw)*sqrt(1.0d0 + X**2)
               end if
  
               if (abs(sterm) < 1.0d-99) cycle
@@ -523,13 +558,13 @@ implicit none
                                                       norm_intensity)
  
             ! DnX at this root
-            term1 = (qe**2.0 * root_omega**2.0) / (4.0*PI*(1.0 + X**2.0) * p**2.0)
-            term2 = (b1/root_omega - sin(alpha_ne)**2.0) / cos(alpha_ne)
+            term1 = (qe**2 * root_omega**2) / (4.0*PI*(1.0 + X**2) * p**2)
+            term2 = (b1/root_omega - sin(alpha_ne)**2) / cos(alpha_ne)
             term3 = norm_intensity * phi_sq / abs(sterm)
  
-            DnXaa = DnXaa + term1 * term2**2.0 * term3
-            DnXap = DnXap + term1 * term2**2.0 * term3 * sin(alpha_ne)/term2
-            DnXpp = DnXpp + term1 * term2**2.0 * term3 * (sin(alpha_ne)/term2)**2.0
+            DnXaa = DnXaa + term1 * term2**2 * term3
+            DnXap = DnXap + term1 * term2**2 * term3 * sin(alpha_ne)/term2
+            DnXpp = DnXpp + term1 * term2**2 * term3 * (sin(alpha_ne)/term2)**2
  
         end do   ! root loop
  

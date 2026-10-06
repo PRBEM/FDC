@@ -2,14 +2,18 @@
 ! FILE: Roots_scan.f90
 ! ==============================================================================
 !
-! Cold-plasma resonant frequency finder that replaces the degree-10
-! polynomial + companion-matrix eigensolve (zrhqr2/zrhqr3) in Roots_finder.
+! Cold-plasma resonant frequency finder and theta skip test, used by
+! Roots_finder and D_local_n in place of the degree-10 polynomial with a
+! companion-matrix eigensolve (zrhqr2/zrhqr3).
 !
 ! CONTENTS
+!   module rootscan_bounds  - skip test and the cached n^2 ranges
 !   module rootcheck_stats  - counters for the -DROOTCHECK comparison mode
-!   roots_scan_cold         - the new root finder
-!   rootcheck_compare       - compares polynomial and scan roots (ROOTCHECK)
-!   rootcheck_summary       - per-rank summary at the end of a run (ROOTCHECK)
+!   rootscan_skip_test      - external wrapper around the skip test, so that
+!                             D_local_n needs no module dependency
+!   roots_scan_cold         - the root finder
+!   rootcheck_compare       - compares polynomial and scan roots (-DROOTCHECK)
+!   rootcheck_summary       - per-rank summary at the end of a run (-DROOTCHECK)
 !
 ! METHOD
 !   Roots_finder's polynomial encodes, for both branches of the cold
@@ -45,11 +49,57 @@
 !   with disc written as (RL - PS)^2 X^4 + 4 P^2 D^2 (1 + X^2), which equals
 !   B^2 - 4AC exactly and is never negative.
 !
+!   Before the scan, a cheap test rules out theta values that cannot contain
+!   a resonance at all: the ranges of n^2 and n_res^2 over the band must
+!   overlap. See the header of module rootscan_bounds below. The same test is
+!   applied one level up, in the theta loop of D_local_n, so that skipped
+!   points do not even enter WeightFunction. -DNO_THETA_SKIP disables it.
+!
 ! VALIDITY GUARD
 !   If the band contains the electron or ion gyrofrequency (poles of R, L,
 !   S), or the inputs are not finite, roots_scan_cold returns ok = .false.
 !   and Roots_finder falls back to the polynomial method.
 !
+! REFERENCES
+!   The approach of rewriting the resonance condition so that the roots can
+!   be bracketed and found by one-dimensional root finding, and of ruling
+!   out theta ranges (and harmonic numbers) that cannot resonate, can be found here:
+!     Albert, J. M. (1999), Analysis of quasi-linear diffusion coefficients,
+!       J. Geophys. Res., 104(A2), 2429, doi:10.1029/1998JA900113
+!     Albert, J. M. (2003), Evaluation of quasi-linear diffusion coefficients
+!       for EMIC waves in a multispecies plasma, J. Geophys. Res., 108(A6),
+!       1249, doi:10.1029/2002JA009792
+!     Albert, J. M. (2005), Evaluation of quasi-linear diffusion coefficients
+!       for whistler mode waves in a plasma with arbitrary density ratio,
+!       J. Geophys. Res., 110, A03218, doi:10.1029/2004JA010844  (Sec. 5, 6)
+!     Albert, J. M. (2007), Refractive index and wavenumber properties for
+!       cyclotron resonant quasilinear diffusion by cold plasma waves,
+!       Phys. Plasmas, 14, 072901, doi:10.1063/1.2744363
+!   The implementation here computes the bounds on n^2 numerically; Albert
+!   (2005), Sec. 4, derives analytic bounds (the high-density form and a
+!   factorisation of Psi) which would make the cache unnecessary.
+!
+! VALIDATION
+!   - Against a verbatim copy of the polynomial code, 1.2M random parameter
+!     sets in six regimes (chorus with theta <= 45 and <= 89 deg, low density,
+!     hiss, n = 0 stress sets): no missed roots, matched roots agree to
+!     <= 5e-12. The rare near-perpendicular differences (theta > 86 deg,
+!     E ~ 100 eV) are spurious polynomial roots, confirmed in 50-digit
+!     arithmetic: the dispersion relation is violated by ~100% at the
+!     frequency the polynomial returns.
+!   - -DROOTCHECK on a production grid, 28 ranks: 0 differences over 6.5M
+!     roots, maximum relative deviation 5e-13, output bit-identical.
+!   - With the skip test: 3M calls on an FDC-like theta grid, 0 differences,
+!     35-65% of calls skipped; FDC output bit-identical with and without.
+!
+! KNOWN LIMITATION
+!   For an underdense plasma (omega_pe inside the band) at theta < ~0.3 deg,
+!   n^2 has a very narrow peak near omega_pe that the scan grid can step
+!   over. This does not occur in the chorus or hiss regimes tested; it would
+!   show up in -DROOTCHECK as a missed root.
+!
+! ==============================================================================
+
 ! ==============================================================================
 
 ! ==============================================================================

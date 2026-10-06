@@ -7,8 +7,8 @@
 !   and magnetic latitude, for the wave amplitude model specified by BwType
 !   in module constants.
 !
-!   All models compute Bw_Input in pT internally. The final conversion
-!   to Tesla is applied at the end: Bw = Bw_Input * 1e-12.
+!   All models compute the amplitude in pT internally. The final conversion
+!   to Tesla is applied at the end: Bw = Bw_pT * 1e-12.
 !
 !   Supported models and their parameter dependencies:
 !
@@ -26,10 +26,10 @@
 !     VITALIICHORUS           X      X       X         Polynomial model, ?
 !     2017CHORUS              X      X       X         ?
 !     2017UPPERBANDCHORUS     X      X       X         ?
-!     2018LBCHORUS            X      X       X         2018 lower band, Dedong?
-!     2018UBCHORUS            X      X       X         2018 upper band, Dedong?
-!     2026LBCHORUS            X      X       X         2026 lower band, Alwin?
-!     2026UBCHORUS            X      X       X         2026 upper band, Alwin?
+!     2018LBCHORUS            X      X       X         2018 lower band, Dedong Wang
+!     2018UBCHORUS            X      X       X         2018 upper band, Dedong Wang
+!     2026LBCHORUS            X      X       X         2026 lower band, Alwin Roy
+!     2026UBCHORUS            X      X       X         2026 upper band, Alwin Roy
 !     CHORUSLAT1545           X      X       X         Latitude 15-45 deg model, ?? -> has a bug
 !     MIDLATCHORUS            X      X       X         Mid-latitude chorus, ?
 !     NBBLBC                         X       X         ?
@@ -47,17 +47,23 @@
 !   constants - BwType, Bw_Input, Kp, MLT, PI, RAD
 !
 ! NOTES:
-!   - All models compute an amplitude in pT, stored in Bw_Input.
-!     The conversion Bw = Bw_Input * 1e-12 is applied once at the end.
+!   - All models compute an amplitude in pT in the local variable Bw_pT;
+!     the conversion Bw = Bw_pT * 1e-12 is applied once at the end. The
+!     module variable Bw_Input holds the value read from the input file and
+!     is only read here (by the CONSTANT case), never overwritten.
 !   - Several models clamp L to a valid range (e.g. [3.5, 6] or [4, 6.5])
 !     using a local variable Ltemp. Similarly, lambda_deg is clamped to a
 !     maximum value in some models. These clamps reflect the observational
 !     data range used to fit the model.
-!   - The CONSTANT case uses Bw_Input as set from the input file in module
-!     constants. No computation is performed in this case.
+!   - The CONSTANT case takes Bw_Input as set from the input file in module
+!     constants; no model evaluation is performed.
 !   - The local variables a1-a9 in the KS14 cases are regression
 !     coefficients specific to those models. They are entirely unrelated to
 !     the module variables a1-a6 in Module_Variables.f90.
+!   - SUSPECTED TYPO: 2017UPPERBANDCHORUS contains the term bbb*Ltemp twice
+!     (coefficients -27.68773262 and -10.6820023) and no bbb*lambda_deg term,
+!     unlike the other models of this family. Left unchanged pending a check
+!     against the original reference.
 !   - BUG: The CHORUSLAT1545 case contains the condition
 !       if(MLT.ge.13.and.MLT.Lt.13)
 !     which can never be true (MLT cannot be simultaneously >= 13 and < 13).
@@ -83,6 +89,7 @@ implicit none
     real*8  :: aaa, bbb                              ! cos/sin of MLT angle
     real*8  :: aa(4,4), bb(4)
     real*8  :: Bw_Input1, Bw_Input2
+    real*8  :: Bw_pT                                 ! wave amplitude [pT], local
     integer :: i, j, ii, jj
 
     lambda_deg = lambda / RAD
@@ -95,10 +102,10 @@ implicit none
         ! ----------------------------------------------------------------------
         case('TYPICALDAYSIDECHORUS')
             if (Kp <= 2.0) then
-                Bw_Input = 10**(0.75 + 0.04*lambda_deg) &
+                Bw_pT = 10**(0.75 + 0.04*lambda_deg) &
                            * sqrt(2.0*10**(0.73 + 0.91*Kp)) / 57.6
             else
-                Bw_Input = 10**(0.75 + 0.04*lambda_deg) &
+                Bw_pT = 10**(0.75 + 0.04*lambda_deg) &
                            * sqrt(2.0*10**(2.5 + 0.18*Kp)) / 57.6
             end if
 
@@ -108,16 +115,16 @@ implicit none
         ! ----------------------------------------------------------------------
         case('TYPICALNIGHTSIDECHORUS')
             if (Kp <= 2.0) then
-                Bw_Input = 50.0 * sqrt(2.0*10**(0.73 + 0.91*Kp)) / 57.6
+                Bw_pT = 50.0 * sqrt(2.0*10**(0.73 + 0.91*Kp)) / 57.6
             else
-                Bw_Input = 50.0 * sqrt(2.0*10**(2.5 + 0.18*Kp)) / 57.6
+                Bw_pT = 50.0 * sqrt(2.0*10**(2.5 + 0.18*Kp)) / 57.6
             end if
 
         ! ----------------------------------------------------------------------
         ! TYPICALHISS: simple linear Kp scaling.
         ! ----------------------------------------------------------------------
         case('TYPICALHISS')
-            Bw_Input = 80.0 * Kp / 4.0
+            Bw_pT = 80.0 * Kp / 4.0
 
         ! ----------------------------------------------------------------------
         ! KS14DAYSIDEHISS: polynomial in L, lambda, Kp.
@@ -133,7 +140,7 @@ implicit none
             log10_Bwsquared = a1 + a2*Kp + a3*L + a4*lambda_deg &
                             + a5*L*lambda_deg + a6*Kp**2 &
                             + a7*L**2 + a8*lambda_deg**2
-            Bw_Input = sqrt(10**log10_Bwsquared)
+            Bw_pT = sqrt(10**log10_Bwsquared)
 
         ! ----------------------------------------------------------------------
         ! KS14NIGHTSIDEHISS: polynomial in L, lambda, Kp.
@@ -149,7 +156,7 @@ implicit none
             log10_Bwsquared = a1 + a2*Kp + a3*L + a4*lambda_deg &
                             + a5*Kp*lambda_deg + a6*L*lambda_deg &
                             + a7*Kp**2 + a8*L**2 + a9*lambda_deg**2
-            Bw_Input = sqrt(10**log10_Bwsquared)
+            Bw_pT = sqrt(10**log10_Bwsquared)
 
         ! ----------------------------------------------------------------------
         ! 2016DAYSIDECHORUS: lambda clamped to 20 degrees maximum.
@@ -157,14 +164,14 @@ implicit none
         case('2016DAYSIDECHORUS')
             if (lambda_deg > 20.0) lambda_deg = 20.0
             log10_Bwsquared = 1.0561 + 0.4095*Kp + 0.0351*lambda_deg
-            Bw_Input = sqrt(10**log10_Bwsquared)
+            Bw_pT = sqrt(10**log10_Bwsquared)
 
         ! ----------------------------------------------------------------------
         ! 2016NIGHTSIDECHORUS
         ! ----------------------------------------------------------------------
         case('2016NIGHTSIDECHORUS')
             log10_Bwsquared = 1.8821 + 0.3637*Kp - 0.05015*lambda_deg
-            Bw_Input = sqrt(10**log10_Bwsquared)
+            Bw_pT = sqrt(10**log10_Bwsquared)
 
         ! ----------------------------------------------------------------------
         ! 2016NIGHTSIDECHORUS2: includes Kp*lambda cross term.
@@ -172,14 +179,14 @@ implicit none
         case('2016NIGHTSIDECHORUS2')
             log10_Bwsquared = 1.0662 + 0.6677*Kp + 0.0223*lambda_deg &
                             - 0.0312*Kp*lambda_deg
-            Bw_Input = sqrt(10**log10_Bwsquared)
+            Bw_pT = sqrt(10**log10_Bwsquared)
 
         ! ----------------------------------------------------------------------
         ! 2016HISS: L-dependent amplitude only.
         ! ----------------------------------------------------------------------
         case('2016HISS')
             log10_Bwsquared = 0.05894*L**3 - 0.7768*L**2 + 3.163*L - 1.036
-            Bw_Input = sqrt(10**log10_Bwsquared)
+            Bw_pT = sqrt(10**log10_Bwsquared)
 
         ! ----------------------------------------------------------------------
         ! OA2015: 4x4 polynomial in (lambda/10, Kp), MLT and L dependent.
@@ -220,7 +227,7 @@ implicit none
                 end do
             end do
             Bw_Input2 = 10**Bw_Input1
-            Bw_Input  = 1000.0 * Bw_Input2
+            Bw_pT  = 1000.0 * Bw_Input2
 
         ! ----------------------------------------------------------------------
         ! VITALIICHORUS: 4x4 polynomial in (lambda/10, L) scaled by Kp polynomial.
@@ -256,7 +263,7 @@ implicit none
                 Bw_Input2 = Bw_Input2 + bb(ii) * Kp**(ii-1)
             end do
 
-            Bw_Input = Bw_Input1 * Bw_Input2 * 1e3   ! nT to pT
+            Bw_pT = Bw_Input1 * Bw_Input2 * 1e3   ! nT to pT
 
         ! ----------------------------------------------------------------------
         ! 2017CHORUS: polynomial in L, lambda, MLT (cos/sin), scaled by Kp.
@@ -269,16 +276,16 @@ implicit none
             aaa = cos(MLT * PI / 12.0)
             bbb = sin(MLT * PI / 12.0)
 
-            Bw_Input = -3266.7 + 546.23*aaa - 670.18*bbb + 1150.0*Ltemp &
+            Bw_pT = -3266.7 + 546.23*aaa - 670.18*bbb + 1150.0*Ltemp &
                      + 87.776*lambda_deg + 199.54*aaa*bbb &
                      + 228.42*bbb*Ltemp - 77.367*Ltemp**2 &
                      - 54.412*aaa*lambda_deg - 10.025*bbb*lambda_deg &
                      - 18.864*Ltemp*lambda_deg
-            Bw_Input = Bw_Input &
+            Bw_pT = Bw_pT &
                      * (75.532*Kp - 45.677*Kp**2 + 50.591*Kp**3 &
                         - 6.265*Kp**4 + 0.53362*Kp**5) / 1478.1
-            if (Bw_Input < 1.0e-2) Bw_Input = 1.0e-2
-            Bw_Input = sqrt(Bw_Input)
+            if (Bw_pT < 1.0e-2) Bw_pT = 1.0e-2
+            Bw_pT = sqrt(Bw_pT)
 
         ! ----------------------------------------------------------------------
         ! 2017UPPERBANDCHORUS: polynomial in L, lambda, MLT, scaled by Kp.
@@ -291,17 +298,17 @@ implicit none
             aaa = cos(MLT * PI / 12.0)
             bbb = sin(MLT * PI / 12.0)
 
-            Bw_Input = 510.0363206 + 206.0115305*aaa + 294.2069939*bbb &
+            Bw_pT = 510.0363206 + 206.0115305*aaa + 294.2069939*bbb &
                      - 64.57977972*Ltemp - 48.76766076*lambda_deg &
                      + 27.89711269*aaa*bbb - 26.18987181*aaa*Ltemp &
                      - 5.740739266*aaa*lambda_deg - 27.68773262*bbb*Ltemp &
                      - 10.6820023*bbb*Ltemp + 0.2699685419*Ltemp**2 &
                      + 4.326157077*Ltemp*lambda_deg + 0.9335134531*lambda_deg**2
-            Bw_Input = Bw_Input &
+            Bw_pT = Bw_pT &
                      * (-9.752027449*Kp + 26.46676219*Kp**2 &
                         - 5.243283335*Kp**3 + 0.3785342851*Kp**4) / 103.3238506
-            if (Bw_Input < 1.0e-2) Bw_Input = 1.0e-2
-            Bw_Input = sqrt(Bw_Input)
+            if (Bw_pT < 1.0e-2) Bw_pT = 1.0e-2
+            Bw_pT = sqrt(Bw_pT)
 
         ! ----------------------------------------------------------------------
         ! CHORUSLAT1545: latitude 15-45 degree chorus model.
@@ -343,9 +350,9 @@ implicit none
             end if
 
             g_Kp     = b_0*Kp**4 + b_1*Kp**3 + b_2*Kp**2 + b_3*Kp + b_4
-            Bw_Input = a_0*lambda_deg**2 + a_1*lambda_deg + a_2
-            Bw_Input = Bw_Input * g_Kp
-            if (Bw_Input < 1.0e-2) Bw_Input = 1.0e-2
+            Bw_pT = a_0*lambda_deg**2 + a_1*lambda_deg + a_2
+            Bw_pT = Bw_pT * g_Kp
+            if (Bw_pT < 1.0e-2) Bw_pT = 1.0e-2
 
         ! ----------------------------------------------------------------------
         ! MIDLATCHORUS: mid-latitude chorus model.
@@ -386,9 +393,9 @@ implicit none
             end if
 
             g_Kp     = b_0*Kp**4 + b_1*Kp**3 + b_2*Kp**2 + b_3*Kp + b_4
-            Bw_Input = a_0*lambda_deg**2 + a_1*lambda_deg + a_2
-            Bw_Input = Bw_Input * g_Kp
-            if (Bw_Input < 1.0e-2) Bw_Input = 1.0e-2
+            Bw_pT = a_0*lambda_deg**2 + a_1*lambda_deg + a_2
+            Bw_pT = Bw_pT * g_Kp
+            if (Bw_pT < 1.0e-2) Bw_pT = 1.0e-2
 
         ! ----------------------------------------------------------------------
         ! 2018UBCHORUS: L-and-MLT-dependent G0/g_Kp scaling, polynomial
@@ -426,13 +433,13 @@ implicit none
 
             aaa = cos(MLT * PI / 12.0)
             bbb = sin(MLT * PI / 12.0)
-            Bw_Input = -0.896 + 23.216*aaa + 15.102*bbb + 6.580*Ltemp &
+            Bw_pT = -0.896 + 23.216*aaa + 15.102*bbb + 6.580*Ltemp &
                      + 0.155*lambda_deg + 0.797*aaa*bbb - 2.943*aaa*Ltemp &
                      - 1.148*aaa*lambda_deg - 1.225*bbb*Ltemp &
                      - 0.796*bbb*lambda_deg - 0.808*Ltemp**2 &
                      - 0.057*Ltemp*lambda_deg - 0.092*lambda_deg**2
-            if (Bw_Input < 1.0e-2) Bw_Input = 1.0e-2
-            Bw_Input = Bw_Input * g_Kp
+            if (Bw_pT < 1.0e-2) Bw_pT = 1.0e-2
+            Bw_pT = Bw_pT * g_Kp
 
         ! ----------------------------------------------------------------------
         ! 2018LBCHORUS: L-and-MLT-dependent G0/g_Kp scaling, polynomial
@@ -471,13 +478,13 @@ implicit none
 
             aaa = cos(MLT * PI / 12.0)
             bbb = sin(MLT * PI / 12.0)
-            Bw_Input = -136.706 + 35.308*aaa + 4.571*bbb + 49.943*Ltemp &
+            Bw_pT = -136.706 + 35.308*aaa + 4.571*bbb + 49.943*Ltemp &
                      + 4.626*lambda_deg + 2.410*aaa*bbb - 3.871*aaa*Ltemp &
                      - 1.780*aaa*lambda_deg + 1.739*bbb*Ltemp &
                      - 0.462*bbb*lambda_deg - 3.801*Ltemp**2 &
                      - 0.848*Ltemp*lambda_deg - 0.017*lambda_deg**2
-            if (Bw_Input < 1.0e-2) Bw_Input = 1.0e-2
-            Bw_Input = Bw_Input * g_Kp
+            if (Bw_pT < 1.0e-2) Bw_pT = 1.0e-2
+            Bw_pT = Bw_pT * g_Kp
 
         ! ----------------------------------------------------------------------
         ! 2026LBCHORUS: L-and-MLT-dependent g_Kp scaling, polynomial
@@ -495,13 +502,13 @@ implicit none
 
             aaa = cos(MLT * PI / 12.0)
             bbb = sin(MLT * PI / 12.0)
-            Bw_Input = -79.283 + 33.851*aaa + 10.731*bbb + 31.739*Ltemp &
+            Bw_pT = -79.283 + 33.851*aaa + 10.731*bbb + 31.739*Ltemp &
                      + 1.985*lambda_deg + 1.258*aaa*bbb - 4.564*aaa*Ltemp &
                      - 1.253*aaa*lambda_deg + 0.48*bbb*Ltemp &
                      - 0.549*bbb*lambda_deg - 2.497*Ltemp**2 &
                      - 0.405*Ltemp*lambda_deg + 0.013*lambda_deg**2
-            if (Bw_Input < 1.0e-2) Bw_Input = 1.0e-2
-            Bw_Input = Bw_Input * g_Kp
+            if (Bw_pT < 1.0e-2) Bw_pT = 1.0e-2
+            Bw_pT = Bw_pT * g_Kp
 
         ! ----------------------------------------------------------------------
         ! 2026UBCHORUS: L-and-MLT-dependent g_Kp scaling, polynomial
@@ -519,32 +526,32 @@ implicit none
 
             aaa = cos(MLT * PI / 12.0)
             bbb = sin(MLT * PI / 12.0)
-            Bw_Input = 18.59 + 20.906*aaa + 15.359*bbb - 0.408*Ltemp &
+            Bw_pT = 18.59 + 20.906*aaa + 15.359*bbb - 0.408*Ltemp &
                      - 1.055*lambda_deg + 0.843*aaa*bbb - 2.64*aaa*Ltemp &
                      - 1.043*aaa*lambda_deg - 1.353*bbb*Ltemp &
                      - 0.749*bbb*lambda_deg - 0.202*Ltemp**2 &
                      + 0.13*Ltemp*lambda_deg - 0.062*lambda_deg**2
-            if (Bw_Input < 1.0e-2) Bw_Input = 1.0e-2
-            Bw_Input = Bw_Input * g_Kp
+            if (Bw_pT < 1.0e-2) Bw_pT = 1.0e-2
+            Bw_pT = Bw_pT * g_Kp
 
         ! ----------------------------------------------------------------------
         ! NBBLBC: lower-band chorus. Kp and latitude dependent.
         ! ----------------------------------------------------------------------
         case('NBBLBC')
             if (Kp == 0.0) then
-                if     (lambda_deg <= 5.0)  then; Bw_Input = 10.0
-                else if(lambda_deg <= 10.0) then; Bw_Input = 10.0
-                else;                             Bw_Input = 10.0
+                if     (lambda_deg <= 5.0)  then; Bw_pT = 10.0
+                else if(lambda_deg <= 10.0) then; Bw_pT = 10.0
+                else;                             Bw_pT = 10.0
                 end if
             else if (Kp == 1.0) then
-                if     (lambda_deg <= 5.0)  then; Bw_Input = 20.0
-                else if(lambda_deg <= 10.0) then; Bw_Input = 35.0
-                else;                             Bw_Input = 20.0
+                if     (lambda_deg <= 5.0)  then; Bw_pT = 20.0
+                else if(lambda_deg <= 10.0) then; Bw_pT = 35.0
+                else;                             Bw_pT = 20.0
                 end if
             else
-                if     (lambda_deg <= 5.0)  then; Bw_Input = 65.0
-                else if(lambda_deg <= 10.0) then; Bw_Input = 80.0
-                else;                             Bw_Input = 60.0
+                if     (lambda_deg <= 5.0)  then; Bw_pT = 65.0
+                else if(lambda_deg <= 10.0) then; Bw_pT = 80.0
+                else;                             Bw_pT = 60.0
                 end if
             end if
 
@@ -553,26 +560,24 @@ implicit none
         ! ----------------------------------------------------------------------
         case('NBBUBC')
             if (Kp == 0.0) then
-                if (lambda_deg <= 5.0) then; Bw_Input = 5.0
-                else;                        Bw_Input = 5.0
+                if (lambda_deg <= 5.0) then; Bw_pT = 5.0
+                else;                        Bw_pT = 5.0
                 end if
             else if (Kp == 1.0) then
-                if (lambda_deg <= 5.0) then; Bw_Input = 15.0
-                else;                        Bw_Input = 10.0
+                if (lambda_deg <= 5.0) then; Bw_pT = 15.0
+                else;                        Bw_pT = 10.0
                 end if
             else
-                if (lambda_deg <= 5.0) then; Bw_Input = 45.0
-                else;                        Bw_Input = 20.0
+                if (lambda_deg <= 5.0) then; Bw_pT = 45.0
+                else;                        Bw_pT = 20.0
                 end if
             end if
 
         ! ----------------------------------------------------------------------
-        ! CONSTANT: fixed amplitude read from input file (Bw_Input in module
-        ! constants). No computation needed; Bw_Input is used as-is.
+        ! CONSTANT: fixed amplitude read from the input file.
         ! ----------------------------------------------------------------------
         case('CONSTANT')
-            ! Bw_Input is set from the input file in module constants.
-            ! Nothing to compute here.
+            Bw_pT = Bw_Input          ! module variable, set from the input file
 
         case default
             write(*,*) 'ERROR: Invalid BwType = ', trim(BwType)
@@ -581,7 +586,7 @@ implicit none
     end select
 
     ! Convert from pT to T
-    Bw = Bw_Input * 1.0e-12
+    Bw = Bw_pT * 1.0d-12
 
     return
 

@@ -45,12 +45,21 @@
 !   constants - qe, me, C0, RAD, omega_m_per
 !
 ! NOTES:
-!   - omega_m_per is used directly in the formula. If FreqUnit='HZ',
-!     omega_m_per is in Hz and should be multiplied by 2*PI before use.
-!     If FreqUnit='RATIO', omega_m_per is a fraction of omega_e_eq and
-!     the formula is dimensionally consistent. For other FreqUnit types
-!     (data-driven models), omega_m_per may not be set and this formula
-!     may give incorrect results. Verify FreqUnit before using MR12 mode.
+!   - Used only when NresType = 'MR12'. With NresType = 'CONSTANT', the
+!     harmonic range comes from nres_min / nres_max in the input file.
+!   - omega_m_per is taken directly from the input file, in whatever unit
+!     FreqUnit specifies. The formula is dimensionally consistent only for
+!     FreqUnit = 'RATIO', where omega_m_per is a fraction of omega_e_eq.
+!     For 'HZ' it would have to be multiplied by 2*PI, and for the
+!     data-driven models (2016HISS, the chorus fits, EMIC) omega_m_per is
+!     not set at all, so the result is meaningless. Check FreqUnit before
+!     using MR12 mode; this routine does not.
+!   - Albert (2005), Sec. 5.1.2, gives a different and more rigorous route
+!     to the same quantity: since V_max decreases with |n|, there is an |n|
+!     beyond which no resonance exists at any theta, and that bound can be
+!     computed from the refractive index. That would remove the dependence
+!     on omega_m_per and the fixed 85 degrees, and cover the data-driven
+!     spectra as well.
 !   - The +1 ensures resonmax >= 1 even for very low energy electrons.
 !
 ! ==============================================================================
@@ -71,12 +80,12 @@ implicit none
     omega_e_eq = qe * B_eq / me
     omega_pe   = sqrt(Ne_local * qe * qe / (C0 * me))
 
-    ! Normalised electron momentum p = sqrt((gamma)^2 - 1) in units of m_e*c
-    p = sqrt((E + 1.0)**2.0 - 1.0)
+    ! Normalised electron momentum p = sqrt(gamma^2 - 1) in units of m_e*c
+    p = sqrt((E + 1.0)**2 - 1.0)
 
-    ! Mourenas & Ripoll [2012] estimate of maximum resonance harmonic
-    resonmax = int(p * sqrt(omega_m_per * omega_e_eq * omega_pe**2.0 &
-                            / omega_e_eq**3.0) * sin(85.0*RAD)) + 1
+    ! Mourenas & Ripoll [2012] estimate of the maximum resonance harmonic
+    resonmax = int(p * sqrt(omega_m_per * omega_e_eq * omega_pe**2 &
+                            / omega_e_eq**3) * sin(85.0*RAD)) + 1
 
     return
 

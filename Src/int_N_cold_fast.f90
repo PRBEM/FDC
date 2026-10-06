@@ -1,8 +1,9 @@
 ! ==============================================================================
-! FILE: int_N_cold_fast.f90
+! SUBROUTINE: int_N_cold_fast
 ! ==============================================================================
 !
-! Fast path for the COLD branch of int_N_omega: the normalisation integral
+! PURPOSE:
+!   Fast path for the COLD branch of int_N_omega: the normalisation integral
 !
 !     N(omega) = integral over theta of
 !                sin(theta) * g(X) * n^2 * c / |d omega / dk|,   X = tan(theta)
@@ -25,14 +26,30 @@
 !      cold_plasma_refractive_index (same branch: (B - sqrt(disc)) / 2A),
 !      using the cached X^2 instead of calling tan() again.
 !
-! The results agree with the original loop to rounding level (~1e-15
-! relative); they are not bit-identical, because products and powers are
-! evaluated in a different order.
+!   -DINTN_ORIG switches int_N_omega back to its own loop and leaves this
+!   routine unused, which is the way to check that the two still agree.
+!
+! CONSISTENCY:
+!   The refractive index here must stay identical to
+!   cold_plasma_refractive_index in Module_Dispersion (same branch of the
+!   quadratic, same expression for the discriminant), and the trapezoidal
+!   rule and the theta grid must stay identical to int_N_omega. If either
+!   is changed, change both.
+!
+! REFERENCE:
+!   The normalisation N(omega) is the one of Lyons (1974b), as used in the
+!   LYONS formulation; see WeightFunction and int_N_omega. Note that it does
+!   not converge when the resonance cone lies inside the integration range:
+!   the integrand diverges there like (theta_cone - theta)^(-5/2), so the
+!   value depends on where the integral is truncated (ConeTruncateN,
+!   cone_backoff).
 !
 ! INPUTS
 !   omega                   wave frequency [rad/s]
-!   theta0, step            first theta [rad] and grid step [rad], computed
-!                           by the caller exactly as in int_N_omega
+!   theta0, step            first theta [rad] and grid step [rad]. The caller
+!                           must compute these exactly as int_N_omega does
+!                           (theta_min/180.0*PI and the step from
+!                           theta_max_eff), so that the grids coincide.
 !   nint                    number of theta points (nint_N_tmp)
 !   X_m1, X_w1, X_m2, X_w2, theta_q   wave-normal distribution parameters
 !   R, L, P, S              Stix parameters at omega

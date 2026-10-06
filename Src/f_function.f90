@@ -15,9 +15,12 @@
 !   where B_E is the equatorial surface field. The L^3 and B_E factors are
 !   handled by B_field; f_function returns only the latitude-dependent part.
 !
+!   The form used here, sqrt(4 - 3*cos^2(lambda)), is identical to
+!   sqrt(1 + 3*sin^2(lambda)).
+!
 !   f(lambda) appears in:
-!     - Local_alpha: sin(alpha_ne) = sin(alpha) * sqrt(f(lambda))
 !     - B_field:     B_local = B0 * f(lambda) / L^3
+!     - Local_alpha: sin(alpha_ne) = sin(alpha) * sqrt(f(lambda))
 !
 !   Reference: Baumjohann & Treumann, Basic Space Plasma Physics,
 !              equation (3.9)
@@ -35,15 +38,15 @@
 !     responsible for ensuring lambda stays within physically valid bounds.
 !
 ! ==============================================================================
- 
+
 subroutine f_function(lambda, f_value)
 implicit none
- 
+
     real*8, intent(in)  :: lambda
     real*8, intent(out) :: f_value
- 
-    f_value = sqrt(4.0 - 3.0*(cos(lambda))**2.0) / (cos(lambda))**6.0
- 
+
+    f_value = sqrt(4.0 - 3.0*cos(lambda)**2) / cos(lambda)**6
+
     return
- 
+
 end subroutine f_function

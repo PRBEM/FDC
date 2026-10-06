@@ -15,9 +15,13 @@
 !   group velocity along the wave vector. The integral runs from theta_min
 !   to theta_max_eff using the trapezoidal rule.
 !
-!   Dispersion properties (n^2 and dw/dk) are obtained via
-!   Get_dispersion_properties from module dispersion, which currently
-!   implements the cold plasma (Stix) formulation.
+!   COLD: the Stix parameters and their omega-derivatives are computed once
+!   before the loop, and the integral is evaluated by int_N_cold_fast, which
+!   caches the theta grid between calls (-DINTN_ORIG selects the explicit
+!   loop below instead, for comparison).
+!   HOT/EMIC: n^2 and dw/dk are interpolated from the WHAMP dispersion
+!   surface in the loop below, with a tolerance fallback and a targeted
+!   rescue at the curve boundaries.
 !
 ! INPUTS:
 !   alpha          - Equatorial electron pitch angle [radians]
@@ -48,22 +52,30 @@
 !   N_of_omega     - Normalisation factor N(omega) [rad]
 !
 ! CALLS:
-!   Get_dispersion_properties - Computes n^2 and dw/dk (module dispersion)
+!   cold_plasma_parameters       - Stix R, L, P, S, D at omega
+!   cold_plasma_stix_derivatives - their omega-derivatives
+!   int_N_cold_fast              - the COLD integral (fast path)
+!   get_whamp_point              - targeted rescue for HOT/EMIC
 !
 ! MODULE DEPENDENCIES:
 !   constants  - PI, nint_N, nint_N_res_cone
 !   dispersion - Get_dispersion_properties, DispersionProperties
 !
 ! NOTES:
-!   - If n^2 < 0 at a given theta point (evanescent wave), that point
-!     contributes zero to the integral.
-!   - A finer integration grid (nint_N_res_cone points) is used when
-!     res_cone = 'Y', to handle the near-singularity of the dispersion
-!     relation close to the resonance cone angle.
-!   - omega_e, omega_pe, omega_i, omega_pi are now passed explicitly as
-!     arguments rather than read from module variables. This replaces the
-!     previous implicit dependency on module variables being pre-populated
-!     by WeightFunction before this routine is called.
+!   - theta_max_eff is the upper limit actually used: it equals theta_max
+!     unless the resonance cone truncates the range (ConeTruncateN,
+!     cone_backoff in Module_Constants), in which case res_cone = 'Y' and
+!     the finer grid nint_N_res_cone is used.
+!   - N(omega) does NOT converge when the cone lies inside the integration
+!     range: the integrand diverges there like (theta_cone - theta)^(-5/2),
+!     so the value is set by where the integral is truncated, not by the
+!     number of points. Increasing nint_N does not help.
+!   - If theta_max - theta_min is below 1e-10 (parallel propagation only),
+!     N = 1 is returned and the integral is skipped.
+!   - The arguments alpha, E, L, lambda and nres are not used in the
+!     computation; they exist only for the -DDIAG output. N(omega) depends
+!     on the frequency, the local plasma and the theta distribution alone,
+!     which is what makes the result cacheable per (L, lambda).
 !
 ! MODIFIED: 2011-10-12 Xudong - revised refractive index and dw/dk calculation
 !           2011-10-24 Xudong - switched to lower-sign branch of dispersion
@@ -171,17 +183,6 @@ implicit none
                                           dPdw_stix, dSdw_stix, dRdw_stix, dLdw_stix)
     end if
 
-    !if (n_debug_writes < 20 .and. E > 1.0d0) then   ! E>1.0 → >511 keV
-    !    n_debug_writes = n_debug_writes + 1
-    !    open(97, file='resonance_debug_highE.txt', status='unknown', position='append')
-    !    write(97,*) 'call=', call_count, &
-    !                ' E_keV=', E*511.0d0, &
-    !                ' alpha(deg)=', alpha*180.0d0/PI, &
-    !                ' omega(Hz)=', omega/(2.0d0*PI), &
-    !                ' n_k=', whamp_curve%n_k
-    !    close(97)
-    !end if
-
 #ifdef DIAG
     ! Diagnostic: logs the N(omega) integrand for one specific grid point
     ! (see the commented-out block further down). Off by default, since the
@@ -266,19 +267,6 @@ implicit none
                     omega_hi_t = (1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,i_k)   + &
                                  w_theta*whamp_curve%omega(i_theta_hi,i_k)
                     if ((omega_lo_t - omega) * (omega_hi_t - omega) <= 0.0d0) then
-                        !if (intn_log .and. theta*180.0d0/PI > 8.0d0) then
-                        !    block
-                        !        character(len=64) :: probe_file
-                        !        write(probe_file,'(A,I0,A)') 'bracket_probe_rank', &
-                        !                                     my_rank_cached, '.txt'
-                        !        open(97, file=trim(probe_file), status='unknown', &
-                        !             position='append')
-                        !        write(97,'(I6,1X,F9.4,1X,I4,1X,I4,1X,I4,4(1X,ES16.8))') &
-                        !            intn_call, theta*180.0d0/PI, i_theta_lo, i_theta_hi, &
-                        !            i_k, omega, omega_lo_t, omega_hi_t, w_theta
-                        !        close(97)
-                        !    end block
-                        !end if
                         frac = (omega - omega_lo_t) / (omega_hi_t - omega_lo_t)
                         DP%n_ref_ind2 = (whamp_curve%k(i_k-1)*c/omega_lo_t)**2.0d0 + &
                             frac*((whamp_curve%k(i_k)*c/omega_hi_t)**2.0d0 - &
@@ -436,18 +424,6 @@ implicit none
                 intn_dwdk = DP%dw_dk
             end if
         end if
-
-        !if (intn_log) then
-        !    write(intn_file,'(A,A,A,I0,A)') 'intn_', trim(DispersionType), &
-        !                                    '_rank', my_rank_cached, '.txt'
-        !    open(98, file=trim(intn_file), status='unknown', position='append')
-        !    write(98,'(I6,1X,I5,1X,I2,1X,I2,1X,I4,1X,I2,5(1X,F11.5),4(1X,ES15.7))') &
-        !        intn_call, i, intn_st, intn_path, nres, acct_iroot, &
-        !        alpha*180.0d0/PI, lambda*180.0d0/PI, acct_theta_res, &
-        !        theta*180.0d0/PI, theta_max, &
-        !        omega, intn_n2, intn_dwdk, Ntmp
-        !    close(98)
-        !end if
 
         ! Trapezoidal weights
         if (i == 1 .or. i == nint_N_tmp) then

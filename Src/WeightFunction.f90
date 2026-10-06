@@ -17,10 +17,11 @@
 !   the resonance condition:
 !       omega - k_par * v_par - n * Omega_e / gamma = 0
 !   The dispersion properties (refractive index, group velocity, polarisation
-!   factor) are obtained via Get_dispersion_properties and
-!   Get_polarisation_factor from module dispersion, which currently implements
-!   the cold plasma (Stix) formulation and is designed to accept a hot plasma
-!   (WHAMP) implementation in future.
+!   factor) come from Get_dispersion_properties and Get_polarisation_factor
+!   in module dispersion. For HOT/EMIC, n^2 and dw/dk are then overwritten by
+!   interpolation on the tabulated WHAMP surface passed in as whamp_curve,
+!   with a tolerance fallback and a targeted rescue (get_whamp_point) at the
+!   edges of the curve.
 !
 !   The integrand is assembled from:
 !     G1 : frequency-weighted wave power spectral density at resonant omega
@@ -80,9 +81,16 @@
 !   dispersion - Dispersion relation interface (Module_Dispersion.f90)
 !
 ! NOTES:
+!   - This routine is called once per theta point by D_local_n, but only for
+!     theta values that can contain a resonance: the skip test in
+!     rootscan_skip_test (COLD + LYONS) filters out the rest, typically 35
+!     to 65% of the grid. A skipped point would return zero here anyway.
 !   - The resonance cone angle is checked; if it falls within the specified
-!     wave normal angle range, theta_max is reduced to 0.99 * theta_cone to
-!     avoid the singularity in the dispersion relation. This guard is
+!     wave normal angle range and ConeTruncateN is .true., theta_max is
+!     reduced to cone_backoff * theta_cone (both in Module_Constants) to
+!     avoid the singularity in the dispersion relation. With
+!     ConeTruncateN = .false. the N(omega) integral runs to theta_max
+!     regardless, which changes every diffusion coefficient. This guard is
 !     primarily needed by the 'LYONS' formulation's int_N_omega integral,
 !     which (per Cunningham 2023) is not integrable if the resonance cone
 !     angle is included as an integration endpoint and g(X) > 0 there. The
@@ -90,10 +98,19 @@
 !     non-integrability problem (no integral over theta is performed), but
 !     the guard is left in place for both formulations for now since it
 !     also affects the validity of n_ref_ind2 itself near the cone.
-!   - Roots that are zero or lie below the lower-hybrid frequency are silently
-!     discarded (WeightValue contributions set to zero).
-!   - The sign check on k_vec for nres > 0 will halt execution if violated;
-!     this is a consistency check inherited from the original implementation.
+!   - Roots that are zero are discarded. The second condition in the same
+!     test is meant as a lower-hybrid cut, but compares a frequency in rad/s
+!     with the dimensionless sqrt((omega_pe/omega_e)^2 + 1), so it never
+!     triggers. Harmless for chorus, where omega_lc already lies above
+!     omega_LH, but it would not protect a lower band. Left unchanged
+!     because fixing it would change results.
+!   - If N(omega) comes out zero the resonance contributes nothing and G2 is
+!     set to zero. That happens when the resonance cone has closed to a
+!     fraction of a degree, i.e. for roots at omega -> Omega_e, which occur
+!     when omega_uc is set to the electron gyrofrequency. Without the guard
+!     G2 would be infinite and the result NaN.
+!   - The sign check on k_vec for nres > 0 is commented out; it was a
+!     consistency check inherited from the original implementation.
 !   - DiffusionFormulation ('LYONS' or 'CUNNINGHAM', from module constants)
 !     selects which normalisation is used for G2, as described above. The
 !     'LYONS' path reproduces the code's original behaviour exactly. 
@@ -177,8 +194,10 @@ implicit none
     integer :: i_theta_lo_cached, i_theta_hi_cached
     real*8  :: w_theta_cached
 
+#ifdef DIAG
     integer, save :: my_rank_cached = -1
     integer :: mpi_ierr
+#endif
 
 #ifdef PROFILE
     call system_clock(t_prof_1)
@@ -187,9 +206,11 @@ implicit none
     ! -------------------------------------------------------------------------
     ! Initialise outputs
     ! -------------------------------------------------------------------------
+#ifdef DIAG
     if (my_rank_cached < 0) then
         call MPI_Comm_rank(MPI_COMM_WORLD, my_rank_cached, mpi_ierr)
     end if
+#endif
     D_tmp(1)    = 0.0
     D_tmp(2)    = 0.0
     D_tmp(3)    = 0.0
@@ -619,6 +640,12 @@ implicit none
                                          BesselF1, BesselF2, BesselF3, &
                                          DP, Fsq)
 
+#ifdef DIAG
+            ! Diagnostic only: recomputes cold-plasma reference quantities at the
+            ! same (omega, theta) so that the WHAMP polarisation can be compared
+            ! with the cold limit. The log at the end of the block is commented
+            ! out, so without -DDIAG none of this runs: that saves three routine
+            ! calls and a good deal of complex arithmetic per root in HOT runs.
             if (trim(DispersionType) == 'HOT' .or. trim(DispersionType) == 'EMIC') then
                 block
                     real*8 :: n2_cold_local, Fsq_cold_equiv
@@ -737,6 +764,7 @@ implicit none
                     !end if
                 end block
             end if
+#endif
 
             !if (E > 1.9d0 .and. E < 2.0d0 .and. abs(alpha_ne*180.0d0/PI - 10.0d0) < 1.0d0 &
             !    .and. abs(lambda*180.0d0/PI) < 0.5d0 .and. nres == -1) then
