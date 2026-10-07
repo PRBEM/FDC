@@ -1,0 +1,3 @@
+[submodule "whamp"]
+	path = whamp
+	url = https://github.com/irfu/whamp.git

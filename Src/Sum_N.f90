@@ -67,11 +67,22 @@
 !   constants  - Physical constants (qe, me, c, RAD, ...),
 !                and control parameters:
 !                  NresType    : resonance order mode ('CONSTANT' or 'MR12')
-!                  nres_min    : minimum resonance harmonic (module default for
-!                                'CONSTANT' mode; set locally for 'MR12')
-!                  nres_max    : maximum resonance harmonic (same)
+!                  nres_min    : minimum resonance harmonic ('CONSTANT' mode)
+!                  nres_max    : maximum resonance harmonic ('CONSTANT' mode)
 !
 ! NOTES:
+!   - In local mode (lam_min = lam_max = 0) the same columns hold the LOCAL
+!     equatorial coefficients; D_ba returns them without bounce averaging.
+!   - HOT/EMIC: the WHAMP dispersion curves are built here, once per lambda
+!     grid point, and passed down so that every harmonic reuses them. They
+!     are rebuilt on every call, i.e. for every (L, E, alpha) point, although
+!     they depend only on (L, lambda): the same curves are recomputed for all
+!     NE energies and all NPA pitch angles of a given L. Reusing them across
+!     a whole (L, alpha) column would cut the cost of a HOT run by close to a
+!     factor NE. Note that lambda_m, and therefore the lambda grid, does
+!     depend on alpha.
+!   - NresType = 'MR12' overwrites nres_min and nres_max locally, not in
+!     module constants, so the values read from the input file survive.
 !   - Energy is converted from keV to normalised units internally:
 !       E = E_keV * 1e3 * qe / (me * c^2)   (= gamma - 1, dimensionless)
 !   - Pitch angle is converted from degrees to radians internally.
@@ -85,6 +96,7 @@
 
 subroutine sum_n(InputData2, local_rows2, columns, OutputData, noutput_rows, noutput_columns)
 use constants
+use dispersion
 implicit none
 
     integer, intent(in) :: local_rows2, columns
@@ -98,12 +110,84 @@ implicit none
     real*8  :: L, E, alpha_eq
 
     integer :: i, resonmax, nres, I_nres
+    integer :: nres_lo, nres_hi          ! harmonic range for this grid point
+
+    type(WHAMPCurve), allocatable :: whamp_curves_shared(:)
+    real*8, allocatable :: lambda_grid_shared(:)
+    integer :: n_lambda_shared
+    real*8 :: lambda_m_shared, lambda_min_shared, delta_lambda_shared
+    real*8 :: fce_khz_s, fpe_khz_s, B_local_s, Ne_local_s
+    real*8 :: Theta_function_s(7)
+    integer :: jj
 
     do i = 1, local_rows2
 
         L        = InputData2(i,1)
         E        = InputData2(i,2) * 1.0e3 * qe / (me*c*c)
         alpha_eq = InputData2(i,3) * RAD
+
+        if (DispersionType == 'HOT' .or. DispersionType == 'EMIC') then
+            ! lambda grid for the shared curves: the same grid D_ba will use
+            call Lambda_mirror_new(alpha_eq, lambda_m_shared)
+            lambda_min_shared = lam_min * RAD
+            if (lambda_m_shared/RAD >= lam_max) then
+                lambda_m_shared = lam_max * RAD
+            else if (lambda_m_shared/RAD <= lam_min) then
+                lambda_m_shared = lam_min * RAD
+            end if
+
+            n_lambda_shared = nint + 1
+            delta_lambda_shared = (lambda_m_shared - lambda_min_shared) / real(nint)
+
+            if (allocated(whamp_curves_shared)) then
+                do jj = 1, size(whamp_curves_shared)
+                    deallocate(whamp_curves_shared(jj)%theta, whamp_curves_shared(jj)%k, &
+                            whamp_curves_shared(jj)%k_whamp, whamp_curves_shared(jj)%omega, &
+                            whamp_curves_shared(jj)%dw_dk, whamp_curves_shared(jj)%valid, &
+                            whamp_curves_shared(jj)%EFL)
+                end do
+                deallocate(whamp_curves_shared)
+            end if
+            if (allocated(lambda_grid_shared)) deallocate(lambda_grid_shared)
+
+            allocate(lambda_grid_shared(n_lambda_shared))
+            allocate(whamp_curves_shared(n_lambda_shared))
+
+            do jj = 1, n_lambda_shared
+                lambda_grid_shared(jj) = lambda_min_shared + delta_lambda_shared * real(jj-1)
+                call B_field(L, lambda_grid_shared(jj), B_local_s)
+                call ElectronDensity(L, lambda_grid_shared(jj), Ne_local_s)
+                fce_khz_s = qe * B_local_s / me / (2.0d0 * PI * 1.0d3)
+                fpe_khz_s = sqrt(Ne_local_s * qe * qe / (C0 * me)) / (2.0d0 * PI * 1.0d3)
+                call Theta_wave(L, lambda_grid_shared(jj), Theta_function_s)
+                call get_whamp_dispersion(fce_khz_s, fpe_khz_s, &
+                                        Theta_function_s(5)*PI/180.0d0, &
+                                        Theta_function_s(6)*PI/180.0d0, &
+                                        whamp_curves_shared(jj))
+            end do
+
+        else
+            ! COLD case: allocate trivially so the array is always in a valid state
+            if (allocated(whamp_curves_shared)) then
+                do jj = 1, size(whamp_curves_shared)
+                    if (allocated(whamp_curves_shared(jj)%theta)) then
+                        deallocate(whamp_curves_shared(jj)%theta, whamp_curves_shared(jj)%k, &
+                                whamp_curves_shared(jj)%k_whamp, whamp_curves_shared(jj)%omega, &
+                                whamp_curves_shared(jj)%dw_dk, whamp_curves_shared(jj)%valid, &
+                                whamp_curves_shared(jj)%EFL)
+                    end if
+                end do
+                deallocate(whamp_curves_shared)
+            end if
+            if (allocated(lambda_grid_shared)) deallocate(lambda_grid_shared)
+
+            n_lambda_shared = 1
+            allocate(whamp_curves_shared(1))
+            allocate(lambda_grid_shared(1))
+            lambda_grid_shared(1) = 0.0d0
+            whamp_curves_shared(1)%n_k     = 0
+            whamp_curves_shared(1)%n_theta = 0
+        end if
 
         BavDaa = 0.0
         BavDap = 0.0
@@ -116,15 +200,15 @@ implicit none
             select case(NresType)
 
                 case('CONSTANT')
-                    ! nres_min and nres_max are used as set in module constants
-                    ! (via the input file).
-                    nres_min = nres_min
-                    nres_max = nres_max
+                    ! range as read from the input file
+                    nres_lo = nres_min
+                    nres_hi = nres_max
 
                 case('MR12')
+                    ! range estimated per grid point (Mourenas & Ripoll 2012)
                     call resonanceorder(E, L, resonmax)
-                    nres_min = -resonmax
-                    nres_max =  resonmax
+                    nres_lo = -resonmax
+                    nres_hi =  resonmax
 
                 case default
                     write(*,*) 'ERROR: Invalid NresType = ', trim(NresType)
@@ -133,9 +217,9 @@ implicit none
 
             end select
 
-            do I_nres = nres_min, nres_max
+            do I_nres = nres_lo, nres_hi
                 nres = I_nres
-                call D_ba(alpha_eq, E, L, nres, BavRate)
+                call D_ba(alpha_eq, E, L, nres, BavRate, whamp_curves_shared, lambda_grid_shared, n_lambda_shared)
                 BavDaa = BavDaa + BavRate(1)
                 BavDap = BavDap + BavRate(2)
                 BavDpp = BavDpp + BavRate(3)
@@ -143,7 +227,7 @@ implicit none
 
             ! Derive energy-related diffusion coefficients from momentum ones
             BavDaE = BavDap * (E + 2.0) / (E + 1.0)
-            BavDEE = BavDpp * ((E + 2.0)**2.0) / ((E + 1.0)**2.0)
+            BavDEE = BavDpp * ((E + 2.0)**2) / ((E + 1.0)**2)
 
             ! Convert s^-1 to day^-1
             BavDaa = BavDaa * 24.0 * 3600.0

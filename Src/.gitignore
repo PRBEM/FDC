@@ -1,0 +1,21 @@
+# Generated outputs
+*.plt
+*_log.txt
+*.png
+*.csv
+
+# Compiled artifacts
+*.o
+*.mod
+main
+main_*
+!main.f90
+
+# Editor/scratch
+Untitled-*
+
+# Untracked folders
+helper_functions/
+Inputs/
+Outputs/
+plot_results/

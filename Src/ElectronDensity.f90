@@ -23,7 +23,7 @@
 !     DENTONMULx    - Denton et al. [2004, 2006] multiplied by x (x=2,3,4,5)
 !     DENTONDIVx    - Denton et al. [2004, 2006] divided by x (x=2,3,4,5)
 !     CONSTANT      - Uniform density DenValue [cm^-3] everywhere
-!     NBBLBUB       - Kp-dependent fixed densities (Saturn NBB study)
+!     NBBLBUB       - Kp-dependent fixed densities (Binbin Ni study)
 !     XD_SATURN     - Saturn density model (Gu et al. 2012)
 !
 ! INPUTS:
@@ -40,17 +40,17 @@
 !   - All model formulas return density in m^-3. The Sheeley and Denton
 !     formulas include a 1e6 factor to convert from cm^-3 to m^-3.
 !   - The latitude dependence cos(lambda)^DenLatIndex is applied to all
-!     models after the base density is computed. DenLatIndex = 0 gives
-!     a latitude-independent density.
-!   - BUG FIXED: the original code had 'SHEELYDIV1O' (letter O) instead of
-!     'SHEELYDIV10' (number zero) in the case statement, which would have
-!     caused a silent fall-through to the DEFAULT error for that model.
+!     models after the base density is computed, including CONSTANT.
+!     DenLatIndex = 0 gives a latitude-independent density.
+!   - The Denton formula contains the term (0.00127*F10.7 - 0.0635) with
+!     the solar radio flux fixed at F10.7 = 78.
 !
 ! REFERENCES:
-!   Sheeley et al. [2001] - J. Geophys. Res., 106, 25631-25641
-!   Carpenter & Anderson [1992] - J. Geophys. Res., 97, 1097-1108
-!   Denton et al. [2004] - J. Geophys. Res., 109, A09215
-!   Denton et al. [2006] - J. Geophys. Res., 111, A04213
+!   Sheeley et al. [2001]
+!   Carpenter & Anderson [1992]
+!   Denton et al. [2004]
+!   Denton et al. [2006]
+!   Gu et al. [2012]
 !
 ! ==============================================================================
 
@@ -61,102 +61,98 @@ implicit none
     real*8, intent(in)  :: L, lambda
     real*8, intent(out) :: Ne_local
 
-    ! Base Sheeley density before scaling (used by all SHEELY variants)
-    real*8 :: Ne_sheeley_base
-    real*8 :: sheeley_scale
-
-    ! -------------------------------------------------------------------------
-    ! Base Sheeley [2001] equatorial density formula (eq. 7)
-    ! Depends on L and MLT; units m^-3
-    ! -------------------------------------------------------------------------
-    Ne_sheeley_base = 1.24e8 * ((3.0/L)**4.0) &
-                    + 3.6e7  * ((3.0/L)**3.5) &
-                    * cos((MLT - (7.7*((3.0/L)**2.0) + 12.0)) * PI/12.0)
+    real*8 :: Ne_base         ! model density before the latitude factor [m^-3]
 
     select case(DenModel)
 
-        ! --- Sheeley variants: base density divided by a scaling factor ---
-        case('SHEELY01');      sheeley_scale = 1.0
-        case('SHEELYDIV1_1');  sheeley_scale = 1.1
-        case('SHEELYDIV1_2');  sheeley_scale = 1.2
-        case('SHEELYDIV1_3');  sheeley_scale = 1.3
-        case('SHEELYDIV1_4');  sheeley_scale = 1.4
-        case('SHEELYDIV1_5');  sheeley_scale = 1.5
-        case('SHEELYDIV1_6');  sheeley_scale = 1.6
-        case('SHEELYDIV1_7');  sheeley_scale = 1.7
-        case('SHEELYDIV1_8');  sheeley_scale = 1.8
-        case('SHEELYDIV1_9');  sheeley_scale = 1.9
-        case('SHEELYDIV2');    sheeley_scale = 2.0
-        case('SHEELYDIV2_5');  sheeley_scale = 2.5
-        case('SHEELYDIV3');    sheeley_scale = 3.0
-        case('SHEELYDIV4');    sheeley_scale = 4.0
-        case('SHEELYDIV5');    sheeley_scale = 5.0
-        case('SHEELYDIV6');    sheeley_scale = 6.0
-        case('SHEELYDIV7');    sheeley_scale = 7.0
-        case('SHEELYDIV8');    sheeley_scale = 8.0
-        case('SHEELYDIV9');    sheeley_scale = 9.0
-        case('SHEELYDIV10');   sheeley_scale = 10.0
+        ! ------------------------------------------------------------------
+        ! Sheeley et al. [2001], eq. 7: equatorial density from L and MLT,
+        ! optionally divided by a fixed factor
+        ! ------------------------------------------------------------------
+        case('SHEELY01', 'SHEELYDIV1_1', 'SHEELYDIV1_2', 'SHEELYDIV1_3', &
+             'SHEELYDIV1_4', 'SHEELYDIV1_5', 'SHEELYDIV1_6', 'SHEELYDIV1_7', &
+             'SHEELYDIV1_8', 'SHEELYDIV1_9', 'SHEELYDIV2',   'SHEELYDIV2_5', &
+             'SHEELYDIV3',   'SHEELYDIV4',   'SHEELYDIV5',   'SHEELYDIV6',   &
+             'SHEELYDIV7',   'SHEELYDIV8',   'SHEELYDIV9',   'SHEELYDIV10')
 
-        ! --- Other density models ---
+            Ne_base = 1.24e8 * ((3.0/L)**4) &
+                    + 3.6e7  * ((3.0/L)**3.5) &
+                    * cos((MLT - (7.7*((3.0/L)**2) + 12.0)) * PI/12.0)
+
+            select case(DenModel)
+                case('SHEELYDIV1_1');  Ne_base = Ne_base / 1.1
+                case('SHEELYDIV1_2');  Ne_base = Ne_base / 1.2
+                case('SHEELYDIV1_3');  Ne_base = Ne_base / 1.3
+                case('SHEELYDIV1_4');  Ne_base = Ne_base / 1.4
+                case('SHEELYDIV1_5');  Ne_base = Ne_base / 1.5
+                case('SHEELYDIV1_6');  Ne_base = Ne_base / 1.6
+                case('SHEELYDIV1_7');  Ne_base = Ne_base / 1.7
+                case('SHEELYDIV1_8');  Ne_base = Ne_base / 1.8
+                case('SHEELYDIV1_9');  Ne_base = Ne_base / 1.9
+                case('SHEELYDIV2');  Ne_base = Ne_base / 2.0
+                case('SHEELYDIV2_5');  Ne_base = Ne_base / 2.5
+                case('SHEELYDIV3');  Ne_base = Ne_base / 3.0
+                case('SHEELYDIV4');  Ne_base = Ne_base / 4.0
+                case('SHEELYDIV5');  Ne_base = Ne_base / 5.0
+                case('SHEELYDIV6');  Ne_base = Ne_base / 6.0
+                case('SHEELYDIV7');  Ne_base = Ne_base / 7.0
+                case('SHEELYDIV8');  Ne_base = Ne_base / 8.0
+                case('SHEELYDIV9');  Ne_base = Ne_base / 9.0
+                case('SHEELYDIV10');  Ne_base = Ne_base / 10.0
+            end select
+
+        ! ------------------------------------------------------------------
+        ! Carpenter & Anderson [1992]: L-dependent only
+        ! ------------------------------------------------------------------
         case('CA92')
-            ! Carpenter & Anderson [1992]: L-dependent only [m^-3]
-            Ne_local = 1e6 * 10.0**(-0.3145*L + 3.9043)
+            Ne_base = 1e6 * 10.0**(-0.3145*L + 3.9043)
 
-        case('DENTON06')
-            ! Denton et al. [2004, 2006]: L-dependent equatorial density [m^-3]
-            Ne_local = 1e6 * 10.0**(-0.324*L + 3.78 &
-                       + (0.00127*78.0 - 0.0635)*exp((2.0-L)/1.5))
+        ! ------------------------------------------------------------------
+        ! Denton et al. [2004, 2006]: L-dependent equatorial density,
+        ! optionally multiplied or divided by a fixed factor
+        ! ------------------------------------------------------------------
+        case('DENTON06', 'DENTONMUL2', 'DENTONMUL3', 'DENTONMUL4', 'DENTONMUL5', &
+             'DENTONDIV2', 'DENTONDIV3', 'DENTONDIV4', 'DENTONDIV5')
 
-        case('DENTONMUL2')
-            Ne_local = 1e6 * 10.0**(-0.324*L + 3.78 &
-                       + (0.00127*78.0 - 0.0635)*exp((2.0-L)/1.5)) * 2.0
+            Ne_base = 1e6 * 10.0**(-0.324*L + 3.78 &
+                      + (0.00127*78.0 - 0.0635)*exp((2.0-L)/1.5))
 
-        case('DENTONMUL3')
-            Ne_local = 1e6 * 10.0**(-0.324*L + 3.78 &
-                       + (0.00127*78.0 - 0.0635)*exp((2.0-L)/1.5)) * 3.0
+            select case(DenModel)
+                case('DENTONMUL2');  Ne_base = Ne_base * 2.0
+                case('DENTONMUL3');  Ne_base = Ne_base * 3.0
+                case('DENTONMUL4');  Ne_base = Ne_base * 4.0
+                case('DENTONMUL5');  Ne_base = Ne_base * 5.0
+                case('DENTONDIV2');  Ne_base = Ne_base / 2.0
+                case('DENTONDIV3');  Ne_base = Ne_base / 3.0
+                case('DENTONDIV4');  Ne_base = Ne_base / 4.0
+                case('DENTONDIV5');  Ne_base = Ne_base / 5.0
+                ! DENTON06: unscaled
+            end select
 
-        case('DENTONMUL4')
-            Ne_local = 1e6 * 10.0**(-0.324*L + 3.78 &
-                       + (0.00127*78.0 - 0.0635)*exp((2.0-L)/1.5)) * 4.0
-
-        case('DENTONMUL5')
-            Ne_local = 1e6 * 10.0**(-0.324*L + 3.78 &
-                       + (0.00127*78.0 - 0.0635)*exp((2.0-L)/1.5)) * 5.0
-
-        case('DENTONDIV2')
-            Ne_local = 1e6 * 10.0**(-0.324*L + 3.78 &
-                       + (0.00127*78.0 - 0.0635)*exp((2.0-L)/1.5)) / 2.0
-
-        case('DENTONDIV3')
-            Ne_local = 1e6 * 10.0**(-0.324*L + 3.78 &
-                       + (0.00127*78.0 - 0.0635)*exp((2.0-L)/1.5)) / 3.0
-
-        case('DENTONDIV4')
-            Ne_local = 1e6 * 10.0**(-0.324*L + 3.78 &
-                       + (0.00127*78.0 - 0.0635)*exp((2.0-L)/1.5)) / 4.0
-
-        case('DENTONDIV5')
-            Ne_local = 1e6 * 10.0**(-0.324*L + 3.78 &
-                       + (0.00127*78.0 - 0.0635)*exp((2.0-L)/1.5)) / 5.0
-
+        ! ------------------------------------------------------------------
+        ! Uniform density from the input file
+        ! ------------------------------------------------------------------
         case('CONSTANT')
-            ! Uniform density from input file [m^-3]
-            Ne_local = DenValue * 1e6
+            Ne_base = DenValue * 1e6
 
+        ! ------------------------------------------------------------------
+        ! Kp-dependent fixed densities (Binbin Ni study)
+        ! ------------------------------------------------------------------
         case('NBBLBUB')
-            ! Kp-dependent fixed densities [m^-3]
             if (Kp == 0.0) then
-                Ne_local = 16.9e6
+                Ne_base = 16.9e6
             else if (Kp == 1.0) then
-                Ne_local = 5.52e6
+                Ne_base = 5.52e6
             else
-                Ne_local = 2.88e6
+                Ne_base = 2.88e6
             end if
 
+        ! ------------------------------------------------------------------
+        ! Saturn density model, Gu et al. [2012]
+        ! ------------------------------------------------------------------
         case('XD_SATURN')
-            ! Saturn density model, Gu et al. [2012]
-            Ne_local = 60e6 * exp(-1.0/3.0 * L**2.0/0.735**2.0 &
-                       * (1.0 - cos(lambda)**6.0))
+            Ne_base = 60e6 * exp(-1.0/3.0 * L**2/0.735**2 &
+                      * (1.0 - cos(lambda)**6))
 
         case default
             write(*,*) 'ERROR: Invalid DenModel = ', trim(DenModel)
@@ -164,23 +160,8 @@ implicit none
 
     end select
 
-    ! -------------------------------------------------------------------------
-    ! Apply Sheeley scaling if a Sheeley variant was selected
-    ! -------------------------------------------------------------------------
-    select case(DenModel)
-        case('SHEELY01', 'SHEELYDIV1_1', 'SHEELYDIV1_2', 'SHEELYDIV1_3', &
-             'SHEELYDIV1_4', 'SHEELYDIV1_5', 'SHEELYDIV1_6', 'SHEELYDIV1_7', &
-             'SHEELYDIV1_8', 'SHEELYDIV1_9', 'SHEELYDIV2',   'SHEELYDIV2_5', &
-             'SHEELYDIV3',   'SHEELYDIV4',   'SHEELYDIV5',   'SHEELYDIV6',   &
-             'SHEELYDIV7',   'SHEELYDIV8',   'SHEELYDIV9',   'SHEELYDIV10')
-            Ne_local = Ne_sheeley_base / sheeley_scale
-    end select
-
-    ! -------------------------------------------------------------------------
-    ! Apply latitude dependence: Ne(lambda) = Ne_eq * cos(lambda)^DenLatIndex
-    ! DenLatIndex = 0 gives latitude-independent density.
-    ! -------------------------------------------------------------------------
-    Ne_local = Ne_local * (cos(lambda))**DenLatIndex
+    ! Latitude dependence: Ne(lambda) = Ne_eq * cos(lambda)^DenLatIndex
+    Ne_local = Ne_base * (cos(lambda))**DenLatIndex
 
     return
 

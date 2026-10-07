@@ -14,12 +14,17 @@
 !   polynomial in omega whose real roots within the wave frequency band
 !   [omega_lc, omega_uc] are the resonant frequencies.
 !
-!   For nres /= 0: a 10th-degree polynomial in omega is solved (general case).
-!   For nres  = 0: symmetry reduces the problem to a cubic in omega^2,
-!                  solved as a 3rd-degree polynomial.
+!   COLD, by default: the roots are found directly in [omega_lc, omega_uc]
+!   by roots_scan_cold (Roots_scan.f90), following Albert (1999, 2003, 2005,
+!   2007). The polynomial route below is used with -DROOTS_POLY, under
+!   -DROOTCHECK, and as a fallback when the scan declines (a band containing
+!   a gyrofrequency):
+!     nres /= 0: a 10th-degree polynomial in omega (zrhqr2)
+!     nres  = 0: even in omega, solved as a cubic in omega^2 (zrhqr3)
 !
-!   Polynomial roots are found using LAPACK via zrhqr2 (nres /= 0) or
-!   zrhqr3 (nres = 0).
+!   HOT/EMIC: the resonance condition is evaluated along the tabulated WHAMP
+!   dispersion curve and refined by linear interpolation at the sign change,
+!   scanning both signs of k_par. At most one root is returned.
 !
 ! INPUTS:
 !   alpha   - Equatorial electron pitch angle [radians]
@@ -42,12 +47,15 @@
 !              and satisfy the group velocity condition |b2| > 1.
 !
 ! MODULE DEPENDENCIES:
-!   constants  - sqe, and indirectly via called routines
+!   constants   - sqe, me, c, PI, DispersionType
+!   dispersion  - WHAMPCurve type, profiling accumulators
 !
 ! CALLS:
-!   Local_alpha  - Converts equatorial pitch angle to local pitch angle
-!   zrhqr2       - LAPACK-based polynomial root finder (degree 10, nres /= 0)
-!   zrhqr3       - LAPACK-based polynomial root finder (degree 3,  nres = 0)
+!   Local_alpha      - Converts equatorial pitch angle to local pitch angle
+!   roots_scan_cold  - Scan-based root finder (COLD, default)
+!   zrhqr2           - Polynomial root finder (degree 10, nres /= 0)
+!   zrhqr3           - Polynomial root finder (degree 3,  nres = 0)
+!   rootcheck_compare- Compares both methods (-DROOTCHECK)
 !
 ! NOTES:
 !   - a5 is hardcoded to 0.0. The original commented-out definition was
@@ -62,22 +70,39 @@
 !                  and satisfy |(omega - b1)*b2/omega| > 1
 !       nres  = 0: root^2 must be real, lie in [omega_lc^2, omega_uc^2],
 !                  and |b2| > 1
+!     Temp2 is |n_res|, the refractive index the resonance condition demands:
+!     n_res = (omega - b1)*b2/omega. For nres = 0 this reduces to |b2|.
+!   - The polynomial is obtained by squaring, so its roots are the union over
+!     both dispersion branches and both signs of k_par. WeightFunction then
+!     evaluates n^2 on the minus branch only, so a root belonging to the plus
+!     branch would be processed with an inconsistent n. roots_scan_cold
+!     reproduces this behaviour (it searches both branches) so that the two
+!     methods remain comparable.
+!   - At most 4 roots are returned. If more are accepted, the extra ones are
+!     discarded with a one-time warning; the ROOTCHECK runs never saw more
+!     than 4.
 !
 ! ==============================================================================
 
 subroutine Roots_finder(alpha, E, L, lambda, nres, theta, &
                         omega_e, omega_pe, omega_i, omega_pi, &
                         omega_lc, omega_uc, &
-                        roots)
+                        roots, whamp_curve, k_sign)
 use constants
+use dispersion
 implicit none
+
+    include "mpif.h"
 
     real*8, intent(in)  :: alpha, E, L, lambda, theta
     integer, intent(in) :: nres
     real*8, intent(in)  :: omega_e, omega_pe, omega_i, omega_pi
     real*8, intent(in)  :: omega_lc, omega_uc
     real*8, intent(out) :: roots(4)
+    real*8, intent(out) :: k_sign(4)   ! +1.0 = root from +k branch, -1.0 = root from -k branch
+    type(WHAMPCurve), intent(in) :: whamp_curve
 
+    ! Cold plasma variables
     real*8 :: coeff(11)
     real*8 :: rtr(10), rti(10)
 
@@ -101,6 +126,30 @@ implicit none
 
     integer :: i, NN
     real*8  :: Temp2
+        
+    ! Scan root finder (Roots_scan.f90)
+    real*8  :: roots_scan(4)
+    integer :: nscan
+    logical :: scan_ok
+
+    ! HOT plasma variables
+    real*8  :: p, vpar
+    real*8  :: f_prev_pos, f_curr_pos, f_prev_neg, f_curr_neg
+    real*8  :: k_prev, k_curr, omega_prev, omega_curr
+    real*8  :: k_res, omega_res, frac
+    integer :: i_k, i_theta_lo, i_theta_hi
+    real*8  :: w_theta
+    logical :: root_found
+
+    integer(8) :: t_prof_1, t_prof_2, prof_rate
+
+    real*8 :: f_at_zero_pos, f_at_zero_neg
+    real*8 :: omega_first, k_first
+    real*8 :: f_first_pos, f_first_neg
+
+#ifdef PROFILE
+    call system_clock(t_prof_1)
+#endif
 
     betta  = sqrt(E*(E + 2.0)) / (E + 1.0)
     gamma1 = E + 1.0
@@ -110,28 +159,181 @@ implicit none
     X = tan(theta)
 
     ! -------------------------------------------------------------------------
-    ! Plasma frequency combination coefficients
-    ! Written to module variables (a1-a6) for subsequent use in WeightFunction.
-    ! Also used locally below as inputs to the polynomial coefficients a7-a16.
+    ! HOT PLASMA CASE: find resonant k from WHAMP dispersion curve
     ! -------------------------------------------------------------------------
-    a1 = omega_i**2.0 + omega_e**2.0 + omega_pe**2.0 + omega_pi**2.0
-    a2 = (omega_i*omega_e)**2.0 + (omega_pe*omega_i)**2.0 + (omega_pi*omega_e)**2.0
+    if ((DispersionType == 'HOT' .or. DispersionType == 'EMIC') .and. whamp_curve%n_k > 0) then
+        p    = me * c * sqrt((E + 1.0d0)**2 - 1.0d0)
+        vpar = p / gamma1 / me * cos(alpha_ne)
+ 
+        roots(1) = 0.0d0
+        roots(2) = 0.0d0
+        roots(3) = 0.0d0
+        roots(4) = 0.0d0
+        k_sign(1:4) = 0.0d0
+        root_found = .false.
+ 
+        ! Find bracketing theta indices and interpolation weight
+        i_theta_lo = 1
+        i_theta_hi = 1
+        w_theta    = 0.0d0
+        if (whamp_curve%n_theta > 1) then
+            if (theta <= whamp_curve%theta(1)) then
+                i_theta_lo = 1
+                i_theta_hi = 1
+            else if (theta >= whamp_curve%theta(whamp_curve%n_theta)) then
+                i_theta_lo = whamp_curve%n_theta
+                i_theta_hi = whamp_curve%n_theta
+            else
+                do i_k = 2, whamp_curve%n_theta
+                    if (whamp_curve%theta(i_k-1) <= theta .and. &
+                        whamp_curve%theta(i_k)   >= theta) then
+                        i_theta_lo = i_k - 1
+                        i_theta_hi = i_k
+                        w_theta = (theta - whamp_curve%theta(i_theta_lo)) / &
+                                  (whamp_curve%theta(i_theta_hi) - &
+                                   whamp_curve%theta(i_theta_lo))
+                        exit
+                    end if
+                end do
+            end if
+        end if
+ 
+        ! Scan k points for sign change in resonance condition
+        ! f(k) = omega(k) - k*cos(theta)*vpar - nres*sqe*omega_e/gamma1
+        ! Scan both +k and -k since the resonant wavevector sign depends on
+        ! the harmonic number and propagation geometry.
+        k_prev      = 0.0d0
+        omega_prev  = 0.0d0
+        f_prev_pos  = 0.0d0
+        f_prev_neg  = 0.0d0
+
+        if (whamp_curve%valid(i_theta_lo, 1) .and. whamp_curve%valid(i_theta_hi, 1)) then
+            f_at_zero_pos = 0.0d0 - real(nres)*real(sqe)*omega_e/gamma1
+            f_at_zero_neg = 0.0d0 - real(nres)*real(sqe)*omega_e/gamma1  ! same at k=0 since k*vpar term vanishes
+
+            omega_first = (1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,1) + w_theta*whamp_curve%omega(i_theta_hi,1)
+            k_first     = whamp_curve%k(1)
+
+            f_first_pos = omega_first - k_first*cos(theta)*vpar - real(nres)*real(sqe)*omega_e/gamma1
+            f_first_neg = omega_first + k_first*cos(theta)*vpar - real(nres)*real(sqe)*omega_e/gamma1
+
+            if (f_at_zero_pos * f_first_pos < 0.0d0) then
+                frac = f_at_zero_pos / (f_at_zero_pos - f_first_pos)
+                omega_res = 0.0d0 + frac * (omega_first - 0.0d0)
+                if (omega_res > omega_lc .and. omega_res < omega_uc) then
+                    roots(1)   = omega_res
+                    k_sign(1)  = 1.0d0
+                    root_found = .true.
+                end if
+            else if (.not. root_found .and. f_at_zero_neg * f_first_neg < 0.0d0) then
+                frac = f_at_zero_neg / (f_at_zero_neg - f_first_neg)
+                omega_res = 0.0d0 + frac * (omega_first - 0.0d0)
+                if (omega_res > omega_lc .and. omega_res < omega_uc) then
+                    roots(1)   = omega_res
+                    k_sign(1)  = -1.0d0
+                    root_found = .true.
+                end if
+            end if
+        end if
+
+        do i_k = 1, whamp_curve%n_k
+            if (.not. whamp_curve%valid(i_theta_lo, i_k)) cycle
+            if (.not. whamp_curve%valid(i_theta_hi, i_k)) cycle
+            k_curr     = whamp_curve%k(i_k)
+            omega_curr = (1.0d0 - w_theta) * whamp_curve%omega(i_theta_lo, i_k) + &
+                         w_theta * whamp_curve%omega(i_theta_hi, i_k)
+            f_curr_pos = omega_curr - k_curr*cos(theta)*vpar &
+                         - real(nres)*real(sqe)*omega_e/gamma1
+            f_curr_neg = omega_curr + k_curr*cos(theta)*vpar &
+                         - real(nres)*real(sqe)*omega_e/gamma1
+
+#ifdef DIAG
+            ! Diagnostic: trace of the k scan for one specific grid point
+            if (nres == -1 .and. E > 0.0293d0 .and. E < 0.0295d0 .and. &
+                abs(alpha_ne*180.0d0/PI - 40.0d0) < 0.5d0 .and. &
+                theta*180.0d0/PI < 0.01d0) then
+                open(99, file='single_case_trace.txt', status='unknown', position='append')
+                write(99,'(A,I4,A,ES13.5,A,ES13.5,A,ES13.5,A,L1,A,ES13.5,A,ES13.5)') &
+                    'i_k=', i_k, ' k=', k_curr, ' omega=', omega_curr, &
+                    ' k_prev=', k_prev, ' i_k>1_and_kprev>0=', (i_k > 1 .and. k_prev > 0.0d0), &
+                    ' f_curr_neg=', f_curr_neg, ' f_prev_neg=', f_prev_neg
+                close(99)
+            end if
+#endif
+
+            if (i_k > 1 .and. k_prev > 0.0d0) then
+                if (f_prev_pos * f_curr_pos < 0.0d0) then
+                    frac      = f_prev_pos / (f_prev_pos - f_curr_pos)
+                    omega_res = omega_prev + frac * (omega_curr - omega_prev)
+                    if (omega_res > omega_lc .and. omega_res < omega_uc) then
+                        roots(1)   = omega_res
+                        k_sign(1)  = 1.0d0
+                        root_found = .true.
+                        exit
+                    end if
+                end if
+                if (f_prev_neg * f_curr_neg < 0.0d0) then
+                    frac      = f_prev_neg / (f_prev_neg - f_curr_neg)
+                    omega_res = omega_prev + frac * (omega_curr - omega_prev)
+                    if (omega_res > omega_lc .and. omega_res < omega_uc) then
+                        roots(1)   = omega_res
+                        k_sign(1)  = -1.0d0
+                        root_found = .true.
+                        exit
+                    end if
+                end if
+            end if
+
+            k_prev     = k_curr
+            omega_prev = omega_curr
+            f_prev_pos = f_curr_pos
+            f_prev_neg = f_curr_neg
+        end do
+
+        return
+    end if
+
+    ! -------------------------------------------------------------------------
+    ! COLD PLASMA CASE: polynomial root finding
+    ! -------------------------------------------------------------------------
+    ! Default: the scan in Roots_scan.f90. The polynomial below is the
+    ! fallback and the -DROOTS_POLY / -DROOTCHECK path.
+    ! a1-a6 are plasma frequency combinations, local to this routine.
+    ! -------------------------------------------------------------------------
+#if !defined(ROOTS_POLY) && !defined(ROOTCHECK)
+    b1 = real(nres)*real(sqe)*omega_e / gamma1
+    b2 = 1.0 / (betta*cos(alpha_ne)*cos(theta))
+    call roots_scan_cold(b1, b2, theta, omega_e, omega_pe, omega_i, omega_pi, &
+                         omega_lc, omega_uc, roots, nscan, scan_ok)
+    if (scan_ok) then
+        k_sign(1:4) = 0.0d0
+#ifdef PROFILE
+        call system_clock(t_prof_2, prof_rate)
+        t_roots_total = t_roots_total + real(t_prof_2 - t_prof_1, 8) / real(prof_rate, 8)
+        n_roots_calls = n_roots_calls + 1
+#endif
+        return
+    end if
+    ! Scan declined (band contains a gyrofrequency): use the polynomial below
+#endif
+    a1 = omega_i**2 + omega_e**2 + omega_pe**2 + omega_pi**2
+    a2 = (omega_i*omega_e)**2 + (omega_pe*omega_i)**2 + (omega_pi*omega_e)**2
     a3 = omega_i + real(sqe)*omega_e
-    a4 = omega_i*real(sqe)*omega_e - omega_pe**2.0 - omega_pi**2.0
+    a4 = omega_i*real(sqe)*omega_e - omega_pe**2 - omega_pi**2
     a5 = 0.0   ! analytically zero; see note in header
-    a6 = omega_pi**2.0 + omega_pe**2.0
+    a6 = omega_pi**2 + omega_pe**2
 
     ! Intermediate polynomial coefficients (local only)
-    a7  = (X**2.0)*a1 + omega_i**2.0 + omega_e**2.0 + a6
-    a8  = (X**2.0)*a2 + (omega_i*omega_e)**2.0 + a6*(omega_i**2.0 + omega_e**2.0)
-    a9  = a6*((omega_i*omega_e)**2.0)
-    a10 = 2.0*a4 - a3**2.0 - a6
-    a11 = a4**2.0 - 2.0*a3*a5 - 2.0*a4*a6 + (a3**2.0)*a6
-    a12 = a5**2.0 + (a4**2.0)*a6 - 2.0*a3*a5*a6
-    a13 = (a5**2.0)*a6
-    a14 = (X**2.0)*(2.0*a4 - a3**2.0) - (2.0 + X**2.0)*(a1 + a6)
-    a15 = (X**2.0)*(a4**2.0 - 2.0*a3*a5) + (2.0 + X**2.0)*(a2 + a1*a6)
-    a16 = (X**2.0)*(a5**2.0) + (2.0 + X**2.0)*a2*a6
+    a7  = (X**2)*a1 + omega_i**2 + omega_e**2 + a6
+    a8  = (X**2)*a2 + (omega_i*omega_e)**2 + a6*(omega_i**2 + omega_e**2)
+    a9  = a6*((omega_i*omega_e)**2)
+    a10 = 2.0*a4 - a3**2 - a6
+    a11 = a4**2 - 2.0*a3*a5 - 2.0*a4*a6 + (a3**2)*a6
+    a12 = a5**2 + (a4**2)*a6 - 2.0*a3*a5*a6
+    a13 = (a5**2)*a6
+    a14 = (X**2)*(2.0*a4 - a3**2) - (2.0 + X**2)*(a1 + a6)
+    a15 = (X**2)*(a4**2 - 2.0*a3*a5) + (2.0 + X**2)*(a2 + a1*a6)
+    a16 = (X**2)*(a5**2) + (2.0 + X**2)*a2*a6
 
     ! Resonance condition parameters
     b1 = real(nres)*real(sqe)*omega_e / gamma1
@@ -140,28 +342,28 @@ implicit none
     ! -------------------------------------------------------------------------
     ! Polynomial coefficients
     ! -------------------------------------------------------------------------
-    coeff(11) = (1 + X**2.0)*((1 - b2**2.0)**2.0)
-    coeff(10) = 4.0*(1 + X**2.0)*b1*(b2**2.0)*(1 - b2**2.0)
-    coeff(9)  = (6.0*(1 + X**2.0)*(b1**2.0) - a7)*(b2**4.0) &
-                - (a14 + 2.0*(1 + X**2.0)*(b1**2.0))*(b2**2.0) &
-                + (1 + X**2.0)*a10
-    coeff(8)  = (4.0*a7*b1 - 4.0*(1 + X**2.0)*(b1**3.0))*(b2**4.0) &
-                + 2.0*a14*b1*(b2**2.0)
-    coeff(7)  = (a8 - 6.0*a7*(b1**2.0) + (1 + X**2.0)*(b1**4.0))*(b2**4.0) &
-                - (a15 + a14*(b1**2.0))*(b2**2.0) &
-                + (1 + X**2.0)*a11
-    coeff(6)  = (4.0*a7*(b1**3.0) - 4.0*a8*b1)*(b2**4.0) &
-                + 2.0*a15*b1*(b2**2.0)
-    coeff(5)  = (6.0*a8*(b1**2.0) - a7*(b1**4.0) - a9)*(b2**4.0) &
-                - (a15*(b1**2.0) - a16)*(b2**2.0) &
-                - (1 + X**2.0)*a12
-    coeff(4)  = (4.0*a9*b1 - 4.0*a8*(b1**3.0))*(b2**4.0) &
-                - 2.0*a16*b1*(b2**2.0)
-    coeff(3)  = (a8*(b1**4.0) - 6.0*a9*(b1**2.0))*(b2**4.0) &
-                + a16*(b1**2.0)*(b2**2.0) &
-                + (1 + X**2.0)*a13
-    coeff(2)  = 4.0*a9*(b1**3.0)*(b2**4.0)
-    coeff(1)  = -a9*(b1**4.0)*(b2**4.0)
+    coeff(11) = (1 + X**2)*((1 - b2**2)**2)
+    coeff(10) = 4.0*(1 + X**2)*b1*(b2**2)*(1 - b2**2)
+    coeff(9)  = (6.0*(1 + X**2)*(b1**2) - a7)*(b2**4) &
+                - (a14 + 2.0*(1 + X**2)*(b1**2))*(b2**2) &
+                + (1 + X**2)*a10
+    coeff(8)  = (4.0*a7*b1 - 4.0*(1 + X**2)*(b1**3))*(b2**4) &
+                + 2.0*a14*b1*(b2**2)
+    coeff(7)  = (a8 - 6.0*a7*(b1**2) + (1 + X**2)*(b1**4))*(b2**4) &
+                - (a15 + a14*(b1**2))*(b2**2) &
+                + (1 + X**2)*a11
+    coeff(6)  = (4.0*a7*(b1**3) - 4.0*a8*b1)*(b2**4) &
+                + 2.0*a15*b1*(b2**2)
+    coeff(5)  = (6.0*a8*(b1**2) - a7*(b1**4) - a9)*(b2**4) &
+                - (a15*(b1**2) - a16)*(b2**2) &
+                - (1 + X**2)*a12
+    coeff(4)  = (4.0*a9*b1 - 4.0*a8*(b1**3))*(b2**4) &
+                - 2.0*a16*b1*(b2**2)
+    coeff(3)  = (a8*(b1**4) - 6.0*a9*(b1**2))*(b2**4) &
+                + a16*(b1**2)*(b2**2) &
+                + (1 + X**2)*a13
+    coeff(2)  = 4.0*a9*(b1**3)*(b2**4)
+    coeff(1)  = -a9*(b1**4)*(b2**4)
 
     ! -------------------------------------------------------------------------
     ! Root finding
@@ -170,6 +372,8 @@ implicit none
     roots(2) = 0.0
     roots(3) = 0.0
     roots(4) = 0.0
+    k_sign(1:4) = 0.0d0   ! unused in COLD path; k_par sign is re-derived from
+                          ! the resonance condition directly in D_local_n
     NN = 0
 
     if (nres /= 0) then
@@ -181,8 +385,12 @@ implicit none
                 if ((rtr(i) > omega_lc) .and. (rtr(i) < omega_uc)) then
                     Temp2 = abs((rtr(i) - b1)*b2 / rtr(i))
                     if (Temp2 > 1.0) then
-                        NN = NN + 1
-                        roots(NN) = rtr(i)
+                        if (NN < 4) then
+                            NN = NN + 1
+                            roots(NN) = rtr(i)
+                        else
+                            call warn_too_many_roots()
+                        end if
                     end if
                 end if
             end if
@@ -200,17 +408,47 @@ implicit none
 
         do i = 1, 3
             if (rti1(i) == 0) then
-                if ((rtr1(i) > (omega_lc**2.0)) .and. &
-                    (rtr1(i) < (omega_uc**2.0)) .and. &
+                if ((rtr1(i) > (omega_lc**2)) .and. &
+                    (rtr1(i) < (omega_uc**2)) .and. &
                     (abs(b2) > 1.0)) then
-                    NN = NN + 1
-                    roots(NN) = sqrt(rtr1(i))
+                    if (NN < 4) then
+                        NN = NN + 1
+                        roots(NN) = sqrt(rtr1(i))
+                    else
+                        call warn_too_many_roots()
+                    end if
                 end if
             end if
         end do
 
     end if
 
+#ifdef ROOTCHECK
+    call roots_scan_cold(b1, b2, theta, omega_e, omega_pe, omega_i, omega_pi, &
+                         omega_lc, omega_uc, roots_scan, nscan, scan_ok)
+    call rootcheck_compare(E, alpha, lambda, nres, theta, &
+                           roots, min(NN, 4), roots_scan, nscan, scan_ok)
+#endif
+
+#ifdef PROFILE
+    call system_clock(t_prof_2, prof_rate)
+    t_roots_total = t_roots_total + real(t_prof_2 - t_prof_1, 8) / real(prof_rate, 8)
+    n_roots_calls = n_roots_calls + 1
+#endif
     return
+
+
+
+contains
+
+    ! One-time warning: more valid roots than the fixed array can hold.
+    subroutine warn_too_many_roots()
+        logical, save :: warned = .false.
+        if (.not. warned) then
+            write(*,*) 'WARNING: Roots_finder found more than 4 valid roots; ', &
+                       'the extra roots are ignored'
+            warned = .true.
+        end if
+    end subroutine warn_too_many_roots
 
 end subroutine Roots_finder

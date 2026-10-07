@@ -15,9 +15,13 @@
 !   group velocity along the wave vector. The integral runs from theta_min
 !   to theta_max_eff using the trapezoidal rule.
 !
-!   Dispersion properties (n^2 and dw/dk) are obtained via
-!   Get_dispersion_properties from module dispersion, which currently
-!   implements the cold plasma (Stix) formulation.
+!   COLD: the Stix parameters and their omega-derivatives are computed once
+!   before the loop, and the integral is evaluated by int_N_cold_fast, which
+!   caches the theta grid between calls (-DINTN_ORIG selects the explicit
+!   loop below instead, for comparison).
+!   HOT/EMIC: n^2 and dw/dk are interpolated from the WHAMP dispersion
+!   surface in the loop below, with a tolerance fallback and a targeted
+!   rescue at the curve boundaries.
 !
 ! INPUTS:
 !   alpha          - Equatorial electron pitch angle [radians]
@@ -48,40 +52,51 @@
 !   N_of_omega     - Normalisation factor N(omega) [rad]
 !
 ! CALLS:
-!   Get_dispersion_properties - Computes n^2 and dw/dk (module dispersion)
+!   cold_plasma_parameters       - Stix R, L, P, S, D at omega
+!   cold_plasma_stix_derivatives - their omega-derivatives
+!   int_N_cold_fast              - the COLD integral (fast path)
+!   get_whamp_point              - targeted rescue for HOT/EMIC
 !
 ! MODULE DEPENDENCIES:
 !   constants  - PI, nint_N, nint_N_res_cone
 !   dispersion - Get_dispersion_properties, DispersionProperties
 !
 ! NOTES:
-!   - If n^2 < 0 at a given theta point (evanescent wave), that point
-!     contributes zero to the integral.
-!   - A finer integration grid (nint_N_res_cone points) is used when
-!     res_cone = 'Y', to handle the near-singularity of the dispersion
-!     relation close to the resonance cone angle.
-!   - omega_e, omega_pe, omega_i, omega_pi are now passed explicitly as
-!     arguments rather than read from module variables. This replaces the
-!     previous implicit dependency on module variables being pre-populated
-!     by WeightFunction before this routine is called.
+!   - theta_max_eff is the upper limit actually used: it equals theta_max
+!     unless the resonance cone truncates the range (ConeTruncateN,
+!     cone_backoff in Module_Constants), in which case res_cone = 'Y' and
+!     the finer grid nint_N_res_cone is used.
+!   - N(omega) does NOT converge when the cone lies inside the integration
+!     range: the integrand diverges there like (theta_cone - theta)^(-5/2),
+!     so the value is set by where the integral is truncated, not by the
+!     number of points. Increasing nint_N does not help.
+!   - If theta_max - theta_min is below 1e-10 (parallel propagation only),
+!     N = 1 is returned and the integral is skipped.
+!   - The arguments alpha, E, L, lambda and nres are not used in the
+!     computation; they exist only for the -DDIAG output. N(omega) depends
+!     on the frequency, the local plasma and the theta distribution alone,
+!     which is what makes the result cacheable per (L, lambda).
 !
 ! MODIFIED: 2011-10-12 Xudong - revised refractive index and dw/dk calculation
 !           2011-10-24 Xudong - switched to lower-sign branch of dispersion
 ! ==============================================================================
 
 subroutine int_N_omega(alpha, E, L, lambda, Theta_function, theta_max_eff, &
-                       nres, omega, omega_e, omega_pe, omega_i, omega_pi, &
-                       res_cone, N_of_omega)
+                       nres, omega, k_vec_res, omega_e, omega_pe, omega_i, omega_pi, &
+                       res_cone, N_of_omega, whamp_curve)
 use constants
 use dispersion
+use accounting
 implicit none
+    include "mpif.h"
 
     real*8, intent(in)  :: alpha, E, L, lambda, Theta_function(7)
-    real*8, intent(in)  :: theta_max_eff, omega
+    real*8, intent(in)  :: theta_max_eff, omega, k_vec_res
     real*8, intent(in)  :: omega_e, omega_pe, omega_i, omega_pi
     integer, intent(in) :: nres
     character, intent(in) :: res_cone
     real*8, intent(out) :: N_of_omega
+    type(WHAMPCurve), intent(in) :: whamp_curve
 
     ! --- Wave normal angle distribution parameters ---
     real*8 :: theta_min, theta_max
@@ -95,8 +110,32 @@ implicit none
     ! --- Dispersion ---
     type(DispersionProperties) :: DP
     real*8 :: k_vec
+
     real*8 :: R_stix, L_stix, P_stix, S_stix, D_stix
     real*8 :: dPdw_stix, dSdw_stix, dRdw_stix, dLdw_stix
+
+    integer(8) :: t_prof_1, t_prof_2, prof_rate
+
+    integer, save :: call_count = 0
+    integer, save :: n_debug_writes = 0
+
+    integer, save :: my_rank_cached = -1
+    integer :: mpi_ierr
+
+    integer           :: intn_st, intn_path
+    integer, save     :: intn_call = 0
+    logical           :: intn_log
+    character(len=80) :: intn_file
+    real*8            :: intn_dwdk, intn_n2
+
+#ifdef PROFILE
+    call system_clock(t_prof_1)
+#endif
+
+    if (my_rank_cached < 0) then
+        call MPI_Comm_rank(MPI_COMM_WORLD, my_rank_cached, mpi_ierr)
+    end if
+    call_count = call_count + 1
 
     ! -------------------------------------------------------------------------
     ! Integration resolution: finer near resonance cone
@@ -125,58 +164,265 @@ implicit none
 
     step = (theta_max - theta_min) / 180.0 * PI / (real(nint_N_tmp) - 1.0)
 
-    ! Pre-compute Stix parameters and their omega-derivatives once, since
-    ! they depend only on omega and plasma frequencies (not theta or k_vec)
-    call cold_plasma_parameters(omega, omega_e, omega_pe, omega_i, omega_pi, &
-                                R_stix, L_stix, P_stix, S_stix, D_stix)
-    call cold_plasma_stix_derivatives(omega, omega_e, omega_pe, omega_i, omega_pi, &
-                                      dPdw_stix, dSdw_stix, dRdw_stix, dLdw_stix)
+    ! Parallel-only (delta-function angle distribution)
+    if ((theta_max - theta_min) < 1.0d-10) then
+        N_of_omega = 1.0d0
+        return
+    end if
 
     ! -------------------------------------------------------------------------
     ! Trapezoidal integration over theta
     ! -------------------------------------------------------------------------
     N_of_omega = 0.0
 
+    if (DispersionType == 'COLD') then
+    call cold_plasma_parameters(omega, omega_e, omega_pe, omega_i, omega_pi, &
+                                R_stix, L_stix, P_stix, S_stix, D_stix)
+
+    call cold_plasma_stix_derivatives(omega, omega_e, omega_pe, omega_i, omega_pi, &
+                                          dPdw_stix, dSdw_stix, dRdw_stix, dLdw_stix)
+    end if
+
+#ifdef DIAG
+    ! Diagnostic: logs the N(omega) integrand for one specific grid point
+    ! (see the commented-out block further down). Off by default, since the
+    ! condition would otherwise be evaluated on every call and the fast cold
+    ! path below is skipped whenever intn_log is true.
+    intn_log = (E > 0.0037d0 .and. E < 0.0041d0) &
+         .and. (abs(alpha*180.0d0/PI - 60.0d0) < 1.0d0) &
+         .and. (abs(lambda*180.0d0/PI) < 0.5d0) &
+         .and. (nres == 0)
+    if (intn_log) intn_call = intn_call + 1
+#else
+    intn_log = .false.
+#endif
+
+#ifndef INTN_ORIG
+    ! Fast cold path (int_N_cold_fast.f90). The loop below is still used for
+    ! HOT/EMIC, with -DINTN_ORIG, and while the intn diagnostics are active.
+    if (DispersionType == 'COLD' .and. .not. intn_log) then
+        call int_N_cold_fast(omega, theta_min / 180.0 * PI, step, nint_N_tmp, &
+                             X_m1, X_w1, X_m2, X_w2, theta_q, &
+                             R_stix, L_stix, P_stix, S_stix, &
+                             dPdw_stix, dSdw_stix, dRdw_stix, dLdw_stix, &
+                             c, N_of_omega)
+#ifdef PROFILE
+        call system_clock(t_prof_2, prof_rate)
+        t_intn_total = t_intn_total + real(t_prof_2 - t_prof_1, 8) / real(prof_rate, 8)
+        n_intn_calls = n_intn_calls + 1
+#endif
+        return
+    end if
+#endif
+
     do i = 1, nint_N_tmp
         theta = theta_min / 180.0 * PI + step * (real(i) - 1.0)
         X     = tan(theta)
 
-        ! Compute n^2 using pre-computed Stix parameters
-        call cold_plasma_refractive_index(omega, 0.0d0, theta, &
-                                          P_stix, S_stix, R_stix, L_stix, &
-                                          DP%n_ref_ind2)
-
-        ! Skip evanescent points (n^2 < 0)
-        if (DP%n_ref_ind2 < 0.0) then
-            Ntmp = 0.0
-        else
-            ! Compute k_vec then group velocity using pre-computed Stix
-            ! parameters and derivatives (avoids repeated cold_plasma_parameters
-            ! and cold_plasma_stix_derivatives calls per theta point)
-            k_vec = sqrt(DP%n_ref_ind2) * omega / c
+        ! HOT case: interpolate n_ref_ind2 and dw_dk from WHAMP curve
+        if ((DispersionType == 'HOT' .or. DispersionType == 'EMIC') .and. whamp_curve%n_k > 0) then
             block
-                real*8 :: dF1dw, dF2dw, dF3dw, dDdw, dDdk, X2
-                X2 = X * X
-                dDdk = (S_stix*X2 + P_stix) * (c**4.0d0) / (omega**4.0d0) &
-                       * 4.0d0*(k_vec**3.0d0) &
-                       - (R_stix*L_stix*X2 + (2.0d0+X2)*P_stix*S_stix) &
-                       * (c**2.0d0)/(omega**2.0d0) * 2.0d0*k_vec
-                dF1dw = ((k_vec*c)**4.0d0) / (omega**5.0d0) * &
-                        (omega*X2*dSdw_stix + omega*dPdw_stix &
-                         - 4.0d0*(S_stix*X2 + P_stix))
-                dF2dw = ((k_vec*c)**2.0d0) / (omega**3.0d0) * &
-                        (omega*(X2*(L_stix*dRdw_stix + R_stix*dLdw_stix) + &
-                                (2.0d0+X2)*(P_stix*dSdw_stix + S_stix*dPdw_stix)) &
-                         - 2.0d0*(R_stix*L_stix*X2 + (2.0d0+X2)*P_stix*S_stix))
-                dF3dw = (1.0d0 + X2) * (R_stix*L_stix*dPdw_stix &
-                        + P_stix*L_stix*dRdw_stix + P_stix*R_stix*dLdw_stix)
-                dDdw = dF1dw - dF2dw + dF3dw
-                DP%dw_dk = -(dDdk / dDdw)
+                integer :: i_k, i_theta_lo, i_theta_hi, i_s
+                real*8  :: w_theta, omega_lo_t, omega_hi_t, frac
+                logical :: found, valid_lo, valid_hi
+                found = .false.
+                intn_path = 0
+                DP%n_ref_ind2 = -1.0d0
+                DP%dw_dk      = 0.0d0
+
+                ! Find bracketing theta indices and interpolation weight
+                i_theta_lo = 1
+                i_theta_hi = 1
+                w_theta    = 0.0d0
+                if (whamp_curve%n_theta > 1) then
+                    if (theta <= whamp_curve%theta(1)) then
+                        i_theta_lo = 1
+                        i_theta_hi = 1
+                    else if (theta >= whamp_curve%theta(whamp_curve%n_theta)) then
+                        i_theta_lo = whamp_curve%n_theta
+                        i_theta_hi = whamp_curve%n_theta
+                    else
+                        do i_s = 2, whamp_curve%n_theta
+                            if (whamp_curve%theta(i_s-1) <= theta .and. &
+                                whamp_curve%theta(i_s)   >= theta) then
+                                i_theta_lo = i_s - 1
+                                i_theta_hi = i_s
+                                w_theta = (theta - whamp_curve%theta(i_theta_lo)) / &
+                                          (whamp_curve%theta(i_theta_hi) - &
+                                           whamp_curve%theta(i_theta_lo))
+                                exit
+                            end if
+                        end do
+                    end if
+                end if
+
+                do i_k = 2, whamp_curve%n_k
+                    valid_lo = whamp_curve%valid(i_theta_lo, i_k) .and. &
+                               whamp_curve%valid(i_theta_lo, i_k-1)
+                    valid_hi = whamp_curve%valid(i_theta_hi, i_k) .and. &
+                               whamp_curve%valid(i_theta_hi, i_k-1)
+                    if (.not. valid_lo .or. .not. valid_hi) cycle
+                    omega_lo_t = (1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,i_k-1) + &
+                                 w_theta*whamp_curve%omega(i_theta_hi,i_k-1)
+                    omega_hi_t = (1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,i_k)   + &
+                                 w_theta*whamp_curve%omega(i_theta_hi,i_k)
+                    if ((omega_lo_t - omega) * (omega_hi_t - omega) <= 0.0d0) then
+                        frac = (omega - omega_lo_t) / (omega_hi_t - omega_lo_t)
+                        DP%n_ref_ind2 = (whamp_curve%k(i_k-1)*c/omega_lo_t)**2.0d0 + &
+                            frac*((whamp_curve%k(i_k)*c/omega_hi_t)**2.0d0 - &
+                                (whamp_curve%k(i_k-1)*c/omega_lo_t)**2.0d0)
+                        DP%dw_dk = ((1.0d0-w_theta)*whamp_curve%dw_dk(i_theta_lo,i_k-1) + &
+                                    w_theta*whamp_curve%dw_dk(i_theta_hi,i_k-1)) + &
+                            frac*( ((1.0d0-w_theta)*whamp_curve%dw_dk(i_theta_lo,i_k) + &
+                                    w_theta*whamp_curve%dw_dk(i_theta_hi,i_k)) - &
+                                ((1.0d0-w_theta)*whamp_curve%dw_dk(i_theta_lo,i_k-1) + &
+                                    w_theta*whamp_curve%dw_dk(i_theta_hi,i_k-1)) )
+                        if (k_vec_res < 0.0d0) then
+                            DP%dw_dk = -DP%dw_dk
+                        end if
+                        found = .true.
+                        intn_path = 1
+                        if (abs(DP%dw_dk) < 1.0d-6 * c) then
+                            Ntmp = 0.0d0
+                            found = .false.
+                        end if
+                        exit
+                    end if
+                end do
+
+                ! Tolerance fallback: if omega is just barely outside the
+                ! curve's valid range at this theta (a precision edge case
+                ! near the whistler cutoff, not a real physics gap), use the
+                ! nearest valid endpoint's values rather than returning zero.
+                if (.not. found) then
+                    block
+                        integer :: i_first_valid, i_last_valid, i_s2
+                        real*8  :: omega_min_t, omega_max_t, tol
+                        logical :: vlo, vhi
+
+                        i_first_valid = 0
+                        i_last_valid  = 0
+                        do i_s2 = 1, whamp_curve%n_k
+                            vlo = whamp_curve%valid(i_theta_lo, i_s2)
+                            vhi = whamp_curve%valid(i_theta_hi, i_s2)
+                            if (vlo .and. vhi) then
+                                if (i_first_valid == 0) i_first_valid = i_s2
+                                i_last_valid = i_s2
+                            end if
+                        end do
+
+                        if (i_first_valid > 0) then
+                            omega_min_t = (1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,i_first_valid) + &
+                                          w_theta*whamp_curve%omega(i_theta_hi,i_first_valid)
+                            omega_max_t = (1.0d0-w_theta)*whamp_curve%omega(i_theta_lo,i_last_valid) + &
+                                          w_theta*whamp_curve%omega(i_theta_hi,i_last_valid)
+                            tol = 0.001d0
+
+                            if (omega > omega_max_t .and. abs(omega-omega_max_t) < tol*omega_max_t) then
+                                DP%n_ref_ind2 = (whamp_curve%k(i_last_valid)*c/omega_max_t)**2.0d0
+                                DP%dw_dk = (1.0d0-w_theta)*whamp_curve%dw_dk(i_theta_lo,i_last_valid) + &
+                                           w_theta*whamp_curve%dw_dk(i_theta_hi,i_last_valid)
+                                if (k_vec_res < 0.0d0) DP%dw_dk = -DP%dw_dk
+                                found = .true.
+                                intn_path = 2
+                                if (abs(DP%dw_dk) < 1.0d-6 * c) then
+                                    found = .false.
+                                end if
+                            else if (omega < omega_min_t .and. abs(omega-omega_min_t) < tol*omega_min_t) then
+                                DP%n_ref_ind2 = (whamp_curve%k(i_first_valid)*c/omega_min_t)**2.0d0
+                                DP%dw_dk = (1.0d0-w_theta)*whamp_curve%dw_dk(i_theta_lo,i_first_valid) + &
+                                           w_theta*whamp_curve%dw_dk(i_theta_hi,i_first_valid)
+                                if (k_vec_res < 0.0d0) DP%dw_dk = -DP%dw_dk
+                                found = .true.
+                                intn_path = 2
+                                if (abs(DP%dw_dk) < 1.0d-6 * c) then
+                                    found = .false.
+                                end if
+                            end if
+                        end if
+                    end block
+                end if
+
+                if (.not. found) then
+                    block
+                        real*8          :: n2_targeted, dw_targeted, omega_found
+                        complex(kind=8) :: EFL_targeted(3)
+                        complex(kind=8) :: BFL_targeted(3)
+                        logical         :: valid_targeted
+                        call get_whamp_point(whamp_curve%fce_khz, whamp_curve%fpe_khz, &
+                                            theta, abs(k_vec_res), omega, &
+                                            n2_targeted, dw_targeted, EFL_targeted, &
+                                            BFL_targeted, valid_targeted)
+                        if (valid_targeted .and. n2_targeted > 0.0d0) then
+                            omega_found = abs(k_vec_res) * c / sqrt(n2_targeted)
+                            if (abs(omega_found - omega) <= 1.0d-3 * omega) then
+                                DP%n_ref_ind2 = n2_targeted
+                                DP%dw_dk      = dw_targeted
+                                if (k_vec_res < 0.0d0) DP%dw_dk = -DP%dw_dk
+                                found = .true.
+                                intn_path = 3
+                            end if
+                        end if
+                    end block
+                end if
+
+                if (.not. found) intn_path = 0
+
+                if (.not. found) then
+                    Ntmp = 0.0d0
+                    intn_st = 1
+                else if (DP%n_ref_ind2 <= 0.0d0 .or. abs(DP%dw_dk) < 1.0d-6 * c) then
+                    Ntmp = 0.0d0
+                    intn_st = 2
+                else
+                    Ntmp = sin(theta) &
+                        * (exp(-((X - X_m1)/X_w1)**2.0) &
+                            + theta_q * exp(-((X - X_m2)/X_w2)**2.0)) &
+                        * DP%n_ref_ind2 * c / abs(DP%dw_dk)
+                    intn_st = 0
+                end if
+                intn_n2   = DP%n_ref_ind2
+                intn_dwdk = DP%dw_dk
             end block
-            Ntmp = sin(theta) &
-                   * (exp(-((X - X_m1)/X_w1)**2.0) &
-                      + theta_q * exp(-((X - X_m2)/X_w2)**2.0)) &
-                   * DP%n_ref_ind2 * c / abs(DP%dw_dk)
+
+        else
+            ! COLD case
+            call cold_plasma_refractive_index(omega, theta, &
+                                              P_stix, S_stix, R_stix, L_stix, &
+                                              DP%n_ref_ind2)
+            if (DP%n_ref_ind2 < 0.0) then
+                Ntmp = 0.0
+                intn_st = 3
+                intn_n2 = DP%n_ref_ind2
+                intn_dwdk = 0.0d0
+            else
+                k_vec = sqrt(DP%n_ref_ind2) * omega / c
+                block
+                    real*8 :: dF1dw, dF2dw, dF3dw, dDdw, dDdk, X2
+                    X2 = X*X   ! X = tan(theta), already computed above
+                    dDdk = (S_stix*X2 + P_stix) * (c**4.0d0) / (omega**4.0d0) * 4.0d0*(k_vec**3.0d0) &
+                           - (R_stix*L_stix*X2 + (2.0d0+X2)*P_stix*S_stix) * (c**2.0d0)/(omega**2.0d0) &
+                             * 2.0d0*k_vec
+                    dF1dw = ((k_vec*c)**4.0d0) / (omega**5.0d0) * &
+                            (omega*X2*dSdw_stix + omega*dPdw_stix - 4.0d0*(S_stix*X2 + P_stix))
+                    dF2dw = ((k_vec*c)**2.0d0) / (omega**3.0d0) * &
+                            (omega*(X2*(L_stix*dRdw_stix + R_stix*dLdw_stix) + &
+                                    (2.0d0+X2)*(P_stix*dSdw_stix + S_stix*dPdw_stix)) - &
+                             2.0d0*(R_stix*L_stix*X2 + (2.0d0+X2)*P_stix*S_stix))
+                    dF3dw = (1.0d0 + X2) * (R_stix*L_stix*dPdw_stix + P_stix*L_stix*dRdw_stix + &
+                                             P_stix*R_stix*dLdw_stix)
+                    dDdw = dF1dw - dF2dw + dF3dw
+                    DP%dw_dk = -(dDdk / dDdw)
+                end block
+                Ntmp = sin(theta) &
+                       * (exp(-((X - X_m1)/X_w1)**2.0) &
+                          + theta_q * exp(-((X - X_m2)/X_w2)**2.0)) &
+                       * DP%n_ref_ind2 * c / abs(DP%dw_dk)
+                intn_st   = 0
+                intn_path = 9
+                intn_n2   = DP%n_ref_ind2
+                intn_dwdk = DP%dw_dk
+            end if
         end if
 
         ! Trapezoidal weights
@@ -188,7 +434,11 @@ implicit none
     end do
 
     N_of_omega = N_of_omega * step
-
+#ifdef PROFILE
+    call system_clock(t_prof_2, prof_rate)
+    t_intn_total = t_intn_total + real(t_prof_2 - t_prof_1, 8) / real(prof_rate, 8)
+    n_intn_calls = n_intn_calls + 1
+#endif
     return
 
 end subroutine int_N_omega
